@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+
 import { Meteor } from 'meteor/meteor';
 import { get } from 'lodash';
 import { TorrentsCollection } from '/imports/api/torrents/torrents';
@@ -71,14 +73,31 @@ Meteor.startup(async () => {
   
   // Load environment variables into settings
   loadEnvSettings();
+
+  
   
   // Log configuration
   if (get(Meteor.settings, 'private.debug', false)) {
     console.log('Configuration loaded:', JSON.stringify(Meteor.settings, null, 2));
   }
   
-  // Make sure we have the default storage directory
-  const tempPath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+  // After loading settings but before initializing WebTorrent
+  const port = process.env.PORT || 3000;
+  const tempPathTemplate = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+  const tempPath = tempPathTemplate.replace('${PORT}', port);
+
+  console.log(`Storage directory for port ${port}: ${tempPath}`);
+
+  // Make sure the directory exists
+  if (!fs.existsSync(tempPath)) {
+    try {
+      fs.mkdirSync(tempPath, { recursive: true });
+      console.log(`Created storage directory: ${tempPath}`);
+    } catch (err) {
+      console.error(`Error creating storage directory: ${err.message}`);
+    }
+  }
+
   
   // In a real app, we'd create the directory if it doesn't exist
   console.log(`Storage directory: ${tempPath}`);

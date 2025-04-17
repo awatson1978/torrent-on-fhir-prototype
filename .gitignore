@@ -46,3 +46,4 @@ tmp/
 
 # WebTorrent temporary data
 /data/fhir-torrents/
+version.desktop

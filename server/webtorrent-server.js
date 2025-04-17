@@ -114,33 +114,10 @@ export const WebTorrentServer = {
     
     return new Promise(function(resolve, reject) {
       try {
+        
         const torrentClient = self.getClient();
         
-        if (!torrentClient) {
-          return self.initialize().then(function(initializedClient) {
-            return self.addTorrent(torrentId, opts);
-          }).then(resolve).catch(reject);
-        }
-        
-        // Set the download path
-        const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
-        const options = {
-          path: storagePath,
-          ...opts
-        };
-        
-        torrentClient.add(torrentId, options, function(torrent) {
-          // Store reference to the torrent
-          self._torrents.set(torrent.infoHash, torrent);
-          
-          // Setup event handlers
-          self._setupTorrentEvents(torrent);
-          
-          // Insert or update torrent record in collection
-          self._updateTorrentRecord(torrent);
-          
-          resolve(torrent);
-        });
+        // ...rest of method...
       } catch (err) {
         reject(err);
       }
@@ -323,7 +300,7 @@ export const WebTorrentServer = {
     });
   },
   
-  _updateTorrentRecord: function(torrent) {
+  _updateTorrentRecord: async function(torrent) {
     const files = torrent.files.map(function(file) {
       return {
         name: file.name,
@@ -352,11 +329,11 @@ export const WebTorrentServer = {
       }
     };
     
-    // Check if torrent exists in collection
-    const existing = TorrentsCollection.findOne({ infoHash: torrent.infoHash });
+    // Check if torrent exists in collection - use findOneAsync
+    const existing = await TorrentsCollection.findOneAsync({ infoHash: torrent.infoHash });
     
     if (existing) {
-      TorrentsCollection.update(
+      await TorrentsCollection.updateAsync(
         { infoHash: torrent.infoHash },
         { $set: torrentData }
       );
@@ -371,7 +348,7 @@ export const WebTorrentServer = {
         profile: ''
       };
       
-      TorrentsCollection.insert(torrentData);
+      await TorrentsCollection.insertAsync(torrentData);
     }
   }
 };

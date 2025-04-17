@@ -52,11 +52,11 @@ TorrentsCollection.allow({
 
 // Setup publications if on server
 if (Meteor.isServer) {
-  Meteor.publish('torrents.all', function() {
-    return TorrentsCollection.find();
+  Meteor.publish('torrents.all', async function() {
+    return await TorrentsCollection.find();
   });
   
-  Meteor.publish('torrents.single', function(torrentId) {
-    return TorrentsCollection.find({ _id: torrentId });
+  Meteor.publish('torrents.single', async function(torrentId) {
+    return await TorrentsCollection.find({ _id: torrentId });
   });
 }

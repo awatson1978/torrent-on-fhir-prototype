@@ -13,16 +13,15 @@ Meteor.methods({
    * @param {String} magnetUri - Magnet URI of the torrent
    * @param {Object} metadata - Additional metadata
    * @return {Object} Added torrent info
-   */
-  'torrents.add': function(magnetUri, metadata = {}) {
+  */
+  'torrents.add': async function(magnetUri, metadata = {}) {
     check(magnetUri, String);
     check(metadata, Object);
     
     console.log('Adding torrent from magnet URI:', magnetUri);
     
-    // This is a blocking operation, but we need to wait for the torrent to be added
-    const result = Promise.await(WebTorrentServer.addTorrent(magnetUri));
-    
+    const result = await WebTorrentServer.addTorrent(magnetUri);
+      
     // Update metadata
     if (Object.keys(metadata).length > 0) {
       Meteor.call('torrents.updateMeta', result.infoHash, metadata);
@@ -42,7 +41,7 @@ Meteor.methods({
    * @param {Object} metadata - Additional metadata
    * @return {Object} Created torrent info
    */
-  'torrents.create': function(name, fileData, metadata = {}) {
+  'torrents.create': async function(name, fileData, metadata = {}) {
     check(name, String);
     check(fileData, Array);
     check(metadata, Object);
@@ -83,10 +82,10 @@ Meteor.methods({
     });
     
     // Create the torrent
-    const result = Promise.await(WebTorrentServer.createTorrent(tempPath, {
+    const result = await WebTorrentServer.createTorrent(tempPath, {
       name: name,
       comment: metadata.description || ''
-    }));
+    });
     
     // Clean up temp files (after a delay to ensure the torrent is created)
     Meteor.setTimeout(function() {
@@ -105,9 +104,41 @@ Meteor.methods({
       }
     }, 5000);
     
-    // Update metadata
+    // Instead of calling updateMeta, directly update the torrent record here
+    // This ensures we're working with a torrent that exists in the database
     if (Object.keys(metadata).length > 0) {
-      Meteor.call('torrents.updateMeta', result.infoHash, metadata);
+      try {
+        // Wait a bit for the torrent to be saved to the database
+        await new Promise(resolve => Meteor.setTimeout(resolve, 500));
+        
+        // Check if torrent exists in database
+        const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash: result.infoHash });
+        
+        if (torrentRecord) {
+          // Update with metadata
+          const updateObj = {};
+          
+          // Only include allowed fields
+          const allowedFields = ['description', 'fhirType', 'meta'];
+          Object.keys(metadata).forEach(function(key) {
+            if (allowedFields.includes(key)) {
+              updateObj[key] = metadata[key];
+            }
+          });
+          
+          if (Object.keys(updateObj).length > 0) {
+            await TorrentsCollection.updateAsync(
+              { infoHash: result.infoHash },
+              { $set: updateObj }
+            );
+          }
+        } else {
+          console.log(`Torrent with infoHash ${result.infoHash} not found in database yet.`);
+        }
+      } catch (err) {
+        console.error('Error updating torrent metadata:', err);
+        // Don't throw the error, just log it - we still want to return the torrent info
+      }
     }
     
     return {
@@ -211,7 +242,7 @@ Meteor.methods({
    * @param {String} infoHash - The torrent info hash
    * @param {Object} metadata - Metadata to update
    */
-  'torrents.updateMeta': function(infoHash, metadata) {
+  'torrents.updateMeta': async function(infoHash, metadata) {
     check(infoHash, String);
     check(metadata, Object);
     
@@ -227,13 +258,17 @@ Meteor.methods({
       }
     });
     
-    // Make sure torrent exists
-    const torrent = TorrentsCollection.findOne({ infoHash });
+    // Make sure torrent exists - use findOneAsync instead of findOne
+    const torrent = await TorrentsCollection.findOneAsync({ infoHash });
     if (!torrent) {
       throw new Meteor.Error('not-found', 'Torrent not found');
     }
     
-    return TorrentsCollection.update({ infoHash }, { $set: updateObj });
+    // Use updateAsync instead of update
+    return await TorrentsCollection.updateAsync(
+      { infoHash }, 
+      { $set: updateObj }
+    );
   },
   
   /**
@@ -241,7 +276,7 @@ Meteor.methods({
    * @param {String} infoHash - The torrent info hash
    * @param {Object} fhirMeta - FHIR metadata
    */
-  'torrents.updateFhirMeta': function(infoHash, fhirMeta) {
+  'torrents.updateFhirMeta': async function(infoHash, fhirMeta) {
     check(infoHash, String);
     check(fhirMeta, {
       fhirVersion: String,
@@ -249,13 +284,14 @@ Meteor.methods({
       profile: Match.Optional(String)
     });
     
-    // Make sure torrent exists
-    const torrent = TorrentsCollection.findOne({ infoHash });
+    // Make sure torrent exists - use findOneAsync
+    const torrent = await TorrentsCollection.findOneAsync({ infoHash });
     if (!torrent) {
       throw new Meteor.Error('not-found', 'Torrent not found');
     }
     
-    return TorrentsCollection.update(
+    // Use updateAsync
+    return await TorrentsCollection.updateAsync(
       { infoHash }, 
       { $set: { meta: fhirMeta } }
     );

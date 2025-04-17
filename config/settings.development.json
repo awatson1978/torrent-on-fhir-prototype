@@ -25,7 +25,7 @@
   },
   "private": {
     "storage": {
-      "tempPath": "/tmp/fhir-torrents"
+      "tempPath": "/tmp/fhir-torrents-${PORT}"
     },
     "debug": true
   }
