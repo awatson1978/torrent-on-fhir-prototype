@@ -60,65 +60,65 @@ Meteor.startup(function() {
   try {
     console.log('Initializing WebTorrent client...');
     
-    // Start WebTorrent client initialization
-    WebTorrentClient.initialize()
-      .then(() => {
-        console.log('WebTorrent initialized successfully');
+    // // Start WebTorrent client initialization
+    // WebTorrentClient.initialize()
+    //   .then(() => {
+    //     console.log('WebTorrent initialized successfully');
         
-        // Render the app after WebTorrent is initialized
-        const container = document.getElementById('react-target');
-        if (!container) {
-          console.error('Could not find #react-target element');
-          return;
-        }
+    //     // Render the app after WebTorrent is initialized
+    //     const container = document.getElementById('react-target');
+    //     if (!container) {
+    //       console.error('Could not find #react-target element');
+    //       return;
+    //     }
         
-        const root = createRoot(container);
-        root.render(<App />);
+    //     const root = createRoot(container);
+    //     root.render(<App />);
         
-        // Remove loading screen after app is rendered
-        Meteor.setTimeout(function() {
-          const loadingScreen = document.getElementById('loading-screen');
-          if (loadingScreen) {
-            loadingScreen.style.opacity = '0';
-            loadingScreen.style.transition = 'opacity 0.5s ease';
-            setTimeout(function() {
-              loadingScreen.remove();
-            }, 500);
-          }
-        }, 500);
-      })
-      .catch((error) => {
-        console.error('Error during WebTorrent initialization:', error);
+    //     // Remove loading screen after app is rendered
+    //     Meteor.setTimeout(function() {
+    //       const loadingScreen = document.getElementById('loading-screen');
+    //       if (loadingScreen) {
+    //         loadingScreen.style.opacity = '0';
+    //         loadingScreen.style.transition = 'opacity 0.5s ease';
+    //         setTimeout(function() {
+    //           loadingScreen.remove();
+    //         }, 500);
+    //       }
+    //     }, 500);
+    //   })
+    //   .catch((error) => {
+    //     console.error('Error during WebTorrent initialization:', error);
         
-        // Render the app anyway to show the error
-        const container = document.getElementById('react-target');
-        if (container) {
-          const root = createRoot(container);
-          root.render(<App />);
-        }
+    //     // Render the app anyway to show the error
+    //     const container = document.getElementById('react-target');
+    //     if (container) {
+    //       const root = createRoot(container);
+    //       root.render(<App />);
+    //     }
         
-        // Update loading text to show error
-        const loadingScreen = document.getElementById('loading-screen');
-        if (loadingScreen) {
-          const loadingText = loadingScreen.querySelector('h2');
-          if (loadingText) {
-            loadingText.textContent = 'Error initializing WebTorrent';
-            loadingText.style.color = 'red';
-          }
+    //     // Update loading text to show error
+    //     const loadingScreen = document.getElementById('loading-screen');
+    //     if (loadingScreen) {
+    //       const loadingText = loadingScreen.querySelector('h2');
+    //       if (loadingText) {
+    //         loadingText.textContent = 'Error initializing WebTorrent';
+    //         loadingText.style.color = 'red';
+    //       }
           
-          const errorMessage = document.createElement('p');
-          errorMessage.textContent = error.message || 'Unknown error';
-          errorMessage.style.color = 'red';
-          loadingScreen.appendChild(errorMessage);
+    //       const errorMessage = document.createElement('p');
+    //       errorMessage.textContent = error.message || 'Unknown error';
+    //       errorMessage.style.color = 'red';
+    //       loadingScreen.appendChild(errorMessage);
           
-          const retryButton = document.createElement('button');
-          retryButton.textContent = 'Retry';
-          retryButton.style.marginTop = '20px';
-          retryButton.style.padding = '8px 16px';
-          retryButton.onclick = function() { window.location.reload(); };
-          loadingScreen.appendChild(retryButton);
-        }
-      });
+    //       const retryButton = document.createElement('button');
+    //       retryButton.textContent = 'Retry';
+    //       retryButton.style.marginTop = '20px';
+    //       retryButton.style.padding = '8px 16px';
+    //       retryButton.onclick = function() { window.location.reload(); };
+    //       loadingScreen.appendChild(retryButton);
+    //     }
+    //   });
   } catch (error) {
     console.error('Fatal error during initialization:', error);
     

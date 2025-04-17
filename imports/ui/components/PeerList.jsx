@@ -29,7 +29,6 @@ function PeerList() {
     };
   });
   
-  // Track connected peers
   useEffect(function() {
     let mounted = true;
     let peersInterval = null;
@@ -70,8 +69,16 @@ function PeerList() {
           }
         });
         
-        // Convert to array
-        setPeers(Array.from(peerMap.values()));
+        // Convert to array and only update if there's a change
+        const newPeers = Array.from(peerMap.values());
+        const peersChanged = 
+          newPeers.length !== peers.length || 
+          JSON.stringify(newPeers) !== JSON.stringify(peers);
+          
+        if (peersChanged) {
+          setPeers(newPeers);
+        }
+        
         setLoading(false);
       } catch (err) {
         console.error('Error updating peers:', err);
@@ -80,14 +87,19 @@ function PeerList() {
       }
     }
     
-    // Update immediately and then every 2 seconds
-    updatePeers();
-    peersInterval = setInterval(updatePeers, 2000);
+    // Only set up the interval if not already loading
+    if (!isLoading) {
+      // Update immediately 
+      updatePeers();
+      
+      // Then every 2 seconds
+      peersInterval = Meteor.setInterval(updatePeers, 2000);
+    }
     
     return function() {
       mounted = false;
       if (peersInterval) {
-        clearInterval(peersInterval);
+        Meteor.clearInterval(peersInterval);
       }
     };
   }, [torrents, isLoading]);

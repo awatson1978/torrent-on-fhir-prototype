@@ -2,6 +2,7 @@ import { Meteor } from 'meteor/meteor';
 import { get } from 'lodash';
 import { Settings } from '../settings/settings';
 import { TorrentsCollection } from './torrents';
+import { BrowserWebTorrent } from './browser-webtorrent';
 
 // We'll load WebTorrent dynamically on the client
 let client = null;
@@ -356,13 +357,13 @@ Meteor.startup(function() {
   if (Meteor.isClient) {
     // Delay WebTorrent initialization to ensure all client libraries are loaded
     Meteor.setTimeout(function() {
-      WebTorrentClient.initialize()
-        .then(function(client) {
-          console.log('WebTorrent client initialized from startup');
-        })
-        .catch(function(err) {
-          console.error('Failed to initialize WebTorrent client from startup:', err);
-        });
+      // WebTorrentClient.initialize()
+      //   .then(function(client) {
+      //     console.log('WebTorrent client initialized from startup');
+      //   })
+      //   .catch(function(err) {
+      //     console.error('Failed to initialize WebTorrent client from startup:', err);
+      //   });
     }, 1000);
   }
 });
