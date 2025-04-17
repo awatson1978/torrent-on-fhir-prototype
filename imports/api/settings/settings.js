@@ -14,14 +14,36 @@ export const Settings = {
    * @return {*} The setting value or default
    */
   get: function(path, defaultValue) {
-    // First check environment variables (convert path to ENV_VAR format)
-    const envVar = path.toUpperCase().replace(/\./g, '_');
-    if (process.env[envVar] !== undefined) {
-      return process.env[envVar];
+    try {
+      // First check environment variables (convert path to ENV_VAR format)
+      if (Meteor.isServer && process.env) {
+        const envVar = path.toUpperCase().replace(/\./g, '_');
+        if (process.env[envVar] !== undefined) {
+          const value = process.env[envVar];
+          // Parse boolean values
+          if (value === 'true') return true;
+          if (value === 'false') return false;
+          // Parse numeric values
+          if (!isNaN(value) && value !== '') return Number(value);
+          // Parse arrays (comma-separated values)
+          if (typeof value === 'string' && value.includes(',')) {
+            return value.split(',').map(item => item.trim());
+          }
+          return value;
+        }
+      }
+      
+      // Then check Meteor settings - guard against missing Meteor.settings
+      if (Meteor.settings) {
+        return get(Meteor.settings, path, defaultValue);
+      }
+      
+      // Return default if no settings found
+      return defaultValue;
+    } catch (err) {
+      console.error(`Error retrieving setting '${path}':`, err);
+      return defaultValue;
     }
-    
-    // Then check Meteor settings
-    return get(Meteor.settings, path, defaultValue);
   },
   
   /**

@@ -4,7 +4,7 @@ import { Meteor } from 'meteor/meteor';
 import { App } from '/imports/ui/App';
 import { WebTorrentClient } from '/imports/api/torrents/webtorrent-client';
 
-Meteor.startup(() => {
+Meteor.startup(function() {
   console.log('FHIR P2P client starting...');
   
   // Create loading element during startup
@@ -51,51 +51,57 @@ Meteor.startup(() => {
   document.head.appendChild(style);
   document.body.appendChild(loadingElement);
   
-  // Initialize WebTorrent client
+  // Render the app first, regardless of WebTorrent status
+  const container = document.getElementById('react-target');
+  if (!container) {
+    console.error('Could not find #react-target element');
+    return;
+  }
+  
+  const root = createRoot(container);
+  root.render(<App />);
+  
+  // Initialize WebTorrent client after rendering the app
   try {
-    Meteor.setTimeout(() => {
-      console.log('Initializing WebTorrent client...');
-      const client = WebTorrentClient.initialize();
-      
-      if (client) {
-        console.log('WebTorrent client initialized successfully!');
-        console.log('WebTorrent client ID:', client.peerId);
-      } else {
-        console.warn('WebTorrent client initialization delayed or failed');
-      }
-      
-      // Remove loading screen
+    console.log('Initializing WebTorrent client...');
+    
+    // Start WebTorrent client initialization
+    WebTorrentClient.initialize();
+    
+    // Remove loading screen after a short delay
+    Meteor.setTimeout(function() {
       const loadingScreen = document.getElementById('loading-screen');
       if (loadingScreen) {
         loadingScreen.style.opacity = '0';
         loadingScreen.style.transition = 'opacity 0.5s ease';
-        setTimeout(() => {
+        setTimeout(function() {
           loadingScreen.remove();
         }, 500);
       }
-      
-      // Render the app
-      const container = document.getElementById('react-target');
-      const root = createRoot(container);
-      root.render(<App />);
-    }, 1000);
+    }, 1500);
   } catch (error) {
-    console.error('Error during application startup:', error);
+    console.error('Error during WebTorrent initialization:', error);
     
     // Update loading text to show error
-    loadingText.textContent = 'Error loading application';
-    loadingText.style.color = 'red';
-    
-    const errorMessage = document.createElement('p');
-    errorMessage.textContent = error.message || 'Unknown error';
-    errorMessage.style.color = 'red';
-    loadingElement.appendChild(errorMessage);
-    
-    const retryButton = document.createElement('button');
-    retryButton.textContent = 'Retry';
-    retryButton.style.marginTop = '20px';
-    retryButton.style.padding = '8px 16px';
-    retryButton.onclick = () => window.location.reload();
-    loadingElement.appendChild(retryButton);
+    const loadingScreen = document.getElementById('loading-screen');
+    if (loadingScreen) {
+      const loadingText = loadingScreen.querySelector('h2');
+      if (loadingText) {
+        loadingText.textContent = 'Error initializing WebTorrent';
+        loadingText.style.color = 'red';
+      }
+      
+      const errorMessage = document.createElement('p');
+      errorMessage.textContent = error.message || 'Unknown error';
+      errorMessage.style.color = 'red';
+      loadingElement.appendChild(errorMessage);
+      
+      const retryButton = document.createElement('button');
+      retryButton.textContent = 'Retry';
+      retryButton.style.marginTop = '20px';
+      retryButton.style.padding = '8px 16px';
+      retryButton.onclick = function() { window.location.reload(); };
+      loadingElement.appendChild(retryButton);
+    }
   }
 });

@@ -18,37 +18,66 @@ export const WebTorrentClient = {
    * @return {Object} The WebTorrent client instance
    */
   initialize: function() {
-    if (!Meteor.isClient) return null;
+    if (!Meteor.isClient) return Promise.resolve(null);
     
-    if (!client) {
+    // Return existing client if already initialized
+    if (client) {
+      console.log('WebTorrent client already initialized');
+      return Promise.resolve(client);
+    }
+    
+    // Return existing promise if initialization is in progress
+    if (isInitializing && initializePromise) {
+      console.log('WebTorrent client initialization in progress');
+      return initializePromise;
+    }
+    
+    console.log('Starting WebTorrent client initialization');
+    isInitializing = true;
+    
+    // Create a promise for the initialization
+    initializePromise = new Promise(function(resolve, reject) {
       try {
         // In Meteor, we need to use the dynamic import approach
         // This will load WebTorrent asynchronously
-        import('webtorrent').then((WebTorrentModule) => {
-          const WebTorrent = WebTorrentModule.default || WebTorrentModule;
-          const config = Settings.getWebTorrentConfig();
-          
-          client = new WebTorrent({
-            tracker: config.tracker,
-            dht: config.dht,
-            webSeeds: config.webSeeds
-          });
-          
-          client.on('error', function(err) {
-            console.error('WebTorrent client error:', err);
-          });
-          
-          console.log('WebTorrent client initialized successfully!');
-        }).catch((err) => {
+        import('webtorrent').then(function(WebTorrentModule) {
+          try {
+            const WebTorrent = WebTorrentModule.default || WebTorrentModule;
+            const config = Settings.getWebTorrentConfig();
+            
+            console.log('Creating WebTorrent client with config:', config);
+            
+            client = new WebTorrent({
+              tracker: config.tracker,
+              dht: config.dht,
+              webSeeds: config.webSeeds
+            });
+            
+            client.on('error', function(err) {
+              console.error('WebTorrent client error:', err);
+            });
+            
+            console.log('WebTorrent client initialized successfully!');
+            isInitializing = false;
+            resolve(client);
+          } catch (err) {
+            console.error('Error creating WebTorrent client:', err);
+            isInitializing = false;
+            reject(err);
+          }
+        }).catch(function(err) {
           console.error('Error importing WebTorrent:', err);
+          isInitializing = false;
+          reject(err);
         });
       } catch (err) {
-        console.error('Error initializing WebTorrent client:', err);
-        return null;
+        console.error('Error during WebTorrent initialization:', err);
+        isInitializing = false;
+        reject(err);
       }
-    }
+    });
     
-    return client;
+    return initializePromise;
   },
   
   /**
