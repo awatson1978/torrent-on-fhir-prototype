@@ -7,7 +7,7 @@ import { WebTorrentServer } from './webtorrent-server';
 // Import methods
 import './methods/torrent-methods';
 import './methods/peer-methods';
-import './methods';
+import './methods/methods';
 
 Meteor.startup(async () => {
   console.log('Starting FHIR P2P server...');

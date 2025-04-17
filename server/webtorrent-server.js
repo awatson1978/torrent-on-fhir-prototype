@@ -9,7 +9,15 @@ import { TorrentsCollection } from '/imports/api/torrents/torrents';
 let client = null;
 let isInitializing = false;
 let initializePromise = null;
+
+// Use require at the top-level instead of within functions
 let WebTorrent = null;
+try {
+  // Try to load synchronously - this is key to avoid the 'await' issue
+  WebTorrent = require('webtorrent');
+} catch (err) {
+  console.error('Error requiring WebTorrent directly, will try again during initialization:', err);
+}
 
 /**
  * WebTorrent server service
@@ -41,20 +49,23 @@ export const WebTorrentServer = {
     // Create a promise for the initialization
     initializePromise = new Promise(function(resolve, reject) {
       try {
-        // Use require instead of import to avoid top-level await
+        // Try again to require WebTorrent if it failed at the module level
         if (!WebTorrent) {
           try {
-            // First try the regular require
             WebTorrent = require('webtorrent');
-          } catch (err) {
-            console.error('Error requiring WebTorrent directly:', err);
-            
-            // If that fails, try to get it from npm
+          } catch (err1) {
+            console.error('Error requiring WebTorrent directly:', err1);
             try {
-              WebTorrent = require('webtorrent/index.js');
+              WebTorrent = require('webtorrent/index');
             } catch (err2) {
-              console.error('Error requiring WebTorrent from index.js:', err2);
-              throw new Error('Could not load WebTorrent module');
+              console.error('Error requiring WebTorrent from index:', err2);
+              try {
+                const npmPath = path.join(process.cwd(), 'node_modules', 'webtorrent');
+                WebTorrent = require(npmPath);
+              } catch (err3) {
+                console.error('Error requiring WebTorrent from npm path:', err3);
+                throw new Error('Could not load WebTorrent module');
+              }
             }
           }
         }
@@ -93,20 +104,11 @@ export const WebTorrentServer = {
     return initializePromise;
   },
   
-  /**
-   * Get the WebTorrent client instance
-   * @return {Object} The WebTorrent client
-   */
+  // Rest of the methods remain the same
   getClient: function() {
     return client;
   },
   
-  /**
-   * Add a torrent to the client
-   * @param {String} torrentId - Magnet URI, info hash, or torrent file
-   * @param {Object} opts - Options for the torrent
-   * @return {Promise<Object>} Promise resolving to the torrent
-   */
   addTorrent: function(torrentId, opts = {}) {
     const self = this;
     
@@ -145,12 +147,6 @@ export const WebTorrentServer = {
     });
   },
   
-  /**
-   * Create a new torrent from files
-   * @param {Array|Buffer|String} files - Files to add to the torrent
-   * @param {Object} opts - Options for the torrent
-   * @return {Promise<Object>} Promise resolving to the torrent
-   */
   createTorrent: function(files, opts = {}) {
     const self = this;
     
@@ -189,12 +185,6 @@ export const WebTorrentServer = {
     });
   },
   
-  /**
-   * Get file contents from a torrent
-   * @param {String} infoHash - Info hash of the torrent
-   * @param {String} filename - Name of the file to get
-   * @return {Promise<String>} Promise resolving to file contents
-   */
   getFileContents: function(infoHash, filename) {
     const self = this;
     
@@ -228,11 +218,6 @@ export const WebTorrentServer = {
     });
   },
   
-  /**
-   * Get all files from a torrent
-   * @param {String} infoHash - Info hash of the torrent
-   * @return {Promise<Object>} Promise resolving to object with file contents
-   */
   getAllFileContents: function(infoHash) {
     const self = this;
     
@@ -272,12 +257,6 @@ export const WebTorrentServer = {
     });
   },
   
-  /**
-   * Remove a torrent from the client
-   * @param {String} infoHash - Info hash of the torrent to remove
-   * @param {Boolean} removeFiles - Whether to remove downloaded files
-   * @return {Promise<Boolean>} Promise resolving when torrent is removed
-   */
   removeTorrent: function(infoHash, removeFiles = false) {
     const self = this;
     
@@ -303,28 +282,14 @@ export const WebTorrentServer = {
     });
   },
   
-  /**
-   * Get a torrent by info hash
-   * @param {String} infoHash - Info hash of the torrent
-   * @return {Object} The torrent instance
-   */
   getTorrent: function(infoHash) {
     return this._torrents.get(infoHash);
   },
   
-  /**
-   * Get all active torrents
-   * @return {Array} Array of torrent instances
-   */
   getAllTorrents: function() {
     return Array.from(this._torrents.values());
   },
   
-  /**
-   * Setup event handlers for a torrent
-   * @private
-   * @param {Object} torrent - The torrent instance
-   */
   _setupTorrentEvents: function(torrent) {
     const self = this;
     
@@ -358,11 +323,6 @@ export const WebTorrentServer = {
     });
   },
   
-  /**
-   * Update or insert torrent record in collection
-   * @private
-   * @param {Object} torrent - The torrent instance
-   */
   _updateTorrentRecord: function(torrent) {
     const files = torrent.files.map(function(file) {
       return {
@@ -419,11 +379,15 @@ export const WebTorrentServer = {
 // Initialize client on server startup
 Meteor.startup(function() {
   console.log('Initializing WebTorrent server...');
-  WebTorrentServer.initialize()
-    .then(function() {
-      console.log('WebTorrent server initialized successfully!');
-    })
-    .catch(function(err) {
-      console.error('Failed to initialize WebTorrent server:', err);
-    });
+  // Use Meteor.setTimeout to ensure the server is fully initialized before attempting
+  // to initialize WebTorrent
+  Meteor.setTimeout(function() {
+    WebTorrentServer.initialize()
+      .then(function() {
+        console.log('WebTorrent server initialized successfully!');
+      })
+      .catch(function(err) {
+        console.error('Failed to initialize WebTorrent server:', err);
+      });
+  }, 1000);
 });
