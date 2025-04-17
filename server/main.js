@@ -2,8 +2,11 @@ import { Meteor } from 'meteor/meteor';
 import { get } from 'lodash';
 import { TorrentsCollection } from '/imports/api/torrents/torrents';
 import { Settings } from '/imports/api/settings/settings';
+import { WebTorrentServer } from './webtorrent-server';
 
 // Import methods
+import './methods/torrent-methods';
+import './methods/peer-methods';
 import './methods';
 
 Meteor.startup(async () => {
@@ -89,6 +92,20 @@ Meteor.startup(async () => {
   Meteor.publish('torrents.single', function (torrentId) {
     return TorrentsCollection.find({ _id: torrentId });
   });
+  
+  // Initialize WebTorrent server
+  try {
+    console.log('Initializing WebTorrent server...');
+    WebTorrentServer.initialize()
+      .then(function(client) {
+        console.log('WebTorrent server initialized successfully!');
+      })
+      .catch(function(err) {
+        console.error('Failed to initialize WebTorrent server:', err);
+      });
+  } catch (err) {
+    console.error('Error during WebTorrent server initialization:', err);
+  }
   
   console.log('FHIR P2P server started successfully');
 });

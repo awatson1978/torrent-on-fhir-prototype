@@ -62,7 +62,9 @@ function createAppTheme() {
   }
 }
 
-export const App = function() {
+// Make sure to export the component correctly
+// Note we're using a named function instead of an arrow function with const
+export function App() {
   const [theme, setTheme] = useState(createAppTheme());
   const [selectedTorrent, setSelectedTorrent] = useState(null);
   const [error, setError] = useState(null);
@@ -147,4 +149,4 @@ export const App = function() {
       </Box>
     </ThemeProvider>
   );
-};
+}

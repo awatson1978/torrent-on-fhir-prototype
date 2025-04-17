@@ -1,4 +1,5 @@
 import React from 'react';
+import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { get } from 'lodash';
 import Paper from '@mui/material/Paper';
@@ -19,7 +20,6 @@ import Box from '@mui/material/Box';
 import moment from 'moment';
 
 import { TorrentsCollection } from '../../api/torrents/torrents';
-import { WebTorrentClient } from '../../api/torrents/webtorrent-client';
 
 // Format bytes to human-readable format
 function formatBytes(bytes, decimals = 2) {
@@ -52,19 +52,31 @@ function TorrentList(props) {
   // Handle torrent removal
   function handleRemoveTorrent(infoHash) {
     if (confirm('Are you sure you want to remove this torrent?')) {
-      WebTorrentClient.removeTorrent(infoHash);
+      Meteor.call('torrents.remove', infoHash, false, function(err) {
+        if (err) {
+          console.error('Error removing torrent:', err);
+          alert('Error removing torrent: ' + err.message);
+        }
+      });
     }
   }
   
   // Handle torrent pause/resume
-  function handleTogglePause(infoHash) {
-    const torrent = WebTorrentClient.getTorrent(infoHash);
-    if (torrent) {
-      if (torrent.paused) {
-        torrent.resume();
-      } else {
-        torrent.pause();
-      }
+  function handleTogglePause(infoHash, currentState) {
+    if (currentState === 'paused') {
+      Meteor.call('torrents.resume', infoHash, function(err) {
+        if (err) {
+          console.error('Error resuming torrent:', err);
+          alert('Error resuming torrent: ' + err.message);
+        }
+      });
+    } else {
+      Meteor.call('torrents.pause', infoHash, function(err) {
+        if (err) {
+          console.error('Error pausing torrent:', err);
+          alert('Error pausing torrent: ' + err.message);
+        }
+      });
     }
   }
   
@@ -138,7 +150,7 @@ function TorrentList(props) {
                       size="small" 
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleTogglePause(torrent.infoHash);
+                        handleTogglePause(torrent.infoHash, get(torrent, 'status.state'));
                       }}
                     >
                       {get(torrent, 'status.state') === 'paused' ? 
@@ -163,3 +175,5 @@ function TorrentList(props) {
     </Paper>
   );
 }
+
+export default TorrentList;

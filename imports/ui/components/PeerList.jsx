@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { Meteor } from 'meteor/meteor';
+import { useTracker } from 'meteor/react-meteor-data';
 import { get } from 'lodash';
 import Paper from '@mui/material/Paper';
 import Table from '@mui/material/Table';
@@ -10,73 +12,85 @@ import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
 import LinearProgress from '@mui/material/LinearProgress';
 import Box from '@mui/material/Box';
-
-import { WebTorrentClient } from '../../api/torrents/webtorrent-client';
+import Alert from '@mui/material/Alert';
+import { TorrentsCollection } from '../../api/torrents/torrents';
 
 function PeerList() {
   const [peers, setPeers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  
+  // Get torrents data
+  const { torrents, isLoading } = useTracker(function() {
+    const sub = Meteor.subscribe('torrents.all');
+    return {
+      torrents: TorrentsCollection.find({}).fetch(),
+      isLoading: !sub.ready()
+    };
+  });
   
   // Track connected peers
   useEffect(function() {
     let mounted = true;
+    let peersInterval = null;
     
     // Function to update peers
     function updatePeers() {
       if (!mounted) return;
       
-      const client = WebTorrentClient.getClient();
-      if (!client) {
-        setPeers([]);
-        setLoading(false);
+      // Get unique peers from all torrents
+      if (isLoading) {
+        setLoading(true);
         return;
       }
       
-      // Get all torrents
-      const torrents = WebTorrentClient.getAllTorrents();
-      
-      // Collect unique peers across all torrents
-      const peerMap = new Map();
-      
-      torrents.forEach(function(torrent) {
-        // Each torrent has wires (connections to peers)
-        torrent.wires.forEach(function(wire) {
-          const peerId = wire.peerId;
-          if (peerId && !peerMap.has(peerId)) {
-            peerMap.set(peerId, {
-              id: peerId,
-              addr: wire.remoteAddress,
-              port: wire.remotePort,
-              client: getClientName(wire.peerExtendedHandshake),
-              connectionType: wire.type || 'unknown',
-              downloadSpeed: wire.downloadSpeed(),
-              uploadSpeed: wire.uploadSpeed(),
-              torrentName: torrent.name
+      try {
+        // Extract peer information from torrent status
+        const peerMap = new Map();
+        
+        torrents.forEach(function(torrent) {
+          // Each torrent has peers count
+          const peerCount = get(torrent, 'status.peers', 0);
+          
+          if (peerCount > 0) {
+            // Since we can't get detailed peer information from the server directly,
+            // we'll just show summary information per torrent
+            const torrentInfoHash = torrent.infoHash.substring(0, 8) + '...';
+            const uniqueId = `${torrent.infoHash}-peers`;
+            
+            peerMap.set(uniqueId, {
+              id: uniqueId,
+              torrentName: torrent.name,
+              torrentHash: torrentInfoHash,
+              peerCount: peerCount,
+              downloadSpeed: get(torrent, 'status.downloadSpeed', 0),
+              uploadSpeed: get(torrent, 'status.uploadSpeed', 0),
+              progress: get(torrent, 'status.progress', 0) * 100
             });
           }
         });
-      });
-      
-      // Convert to array
-      setPeers(Array.from(peerMap.values()));
-      setLoading(false);
-    }
-    
-    // Get client info from handshake if available
-    function getClientName(handshake) {
-      if (!handshake || !handshake.v) return 'Unknown';
-      return handshake.v;
+        
+        // Convert to array
+        setPeers(Array.from(peerMap.values()));
+        setLoading(false);
+      } catch (err) {
+        console.error('Error updating peers:', err);
+        setError(`Error updating peers: ${err.message}`);
+        setLoading(false);
+      }
     }
     
     // Update immediately and then every 2 seconds
     updatePeers();
-    const interval = setInterval(updatePeers, 2000);
+    peersInterval = setInterval(updatePeers, 2000);
     
     return function() {
       mounted = false;
-      clearInterval(interval);
+      if (peersInterval) {
+        clearInterval(peersInterval);
+      }
     };
-  }, []);
+  }, [torrents, isLoading]);
   
   // Format speed (bytes/sec) to human-readable format
   function formatSpeed(bytesPerSec) {
@@ -96,6 +110,10 @@ function PeerList() {
         Connected Peers
       </Typography>
       
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>
+      )}
+      
       {loading ? (
         <LinearProgress />
       ) : peers.length === 0 ? (
@@ -105,27 +123,37 @@ function PeerList() {
           <Table size="small" aria-label="peers table">
             <TableHead>
               <TableRow>
-                <TableCell>Peer ID</TableCell>
-                <TableCell>Address</TableCell>
-                <TableCell>Client</TableCell>
-                <TableCell>Connection</TableCell>
+                <TableCell>Torrent</TableCell>
+                <TableCell>Torrent Hash</TableCell>
+                <TableCell>Peer Count</TableCell>
                 <TableCell>Download</TableCell>
                 <TableCell>Upload</TableCell>
-                <TableCell>Torrent</TableCell>
+                <TableCell>Progress</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {peers.map((peer) => (
                 <TableRow key={peer.id}>
-                  <TableCell component="th" scope="row">
-                    {peer.id.substring(0, 8)}...
-                  </TableCell>
-                  <TableCell>{peer.addr}:{peer.port}</TableCell>
-                  <TableCell>{peer.client}</TableCell>
-                  <TableCell>{peer.connectionType}</TableCell>
+                  <TableCell>{peer.torrentName}</TableCell>
+                  <TableCell>{peer.torrentHash}</TableCell>
+                  <TableCell>{peer.peerCount}</TableCell>
                   <TableCell>{formatSpeed(peer.downloadSpeed)}</TableCell>
                   <TableCell>{formatSpeed(peer.uploadSpeed)}</TableCell>
-                  <TableCell>{peer.torrentName}</TableCell>
+                  <TableCell>
+                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                      <Box sx={{ width: '100%', mr: 1 }}>
+                        <LinearProgress 
+                          variant="determinate" 
+                          value={peer.progress} 
+                        />
+                      </Box>
+                      <Box sx={{ minWidth: 35 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          {Math.round(peer.progress)}%
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

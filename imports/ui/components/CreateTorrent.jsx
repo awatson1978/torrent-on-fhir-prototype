@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Meteor } from 'meteor/meteor';
 import { get } from 'lodash';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
@@ -20,7 +21,6 @@ import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
 import Snackbar from '@mui/material/Snackbar';
 
-import { WebTorrentClient } from '../../api/torrents/webtorrent-client';
 import { FhirUtils } from '../../api/fhir/fhir-utils';
 
 function TabPanel(props) {
@@ -93,9 +93,13 @@ function CreateTorrent() {
     setError('');
     
     try {
-      // Validate FHIR files
+      // Read files and prepare data for the server
+      const fileData = [];
+      
       for (const file of selectedFiles) {
         const text = await readFileAsText(file);
+        
+        // Validate FHIR files
         const format = FhirUtils.detectFormat(text);
         
         if (format === 'unknown') {
@@ -116,30 +120,29 @@ function CreateTorrent() {
           setLoading(false);
           return;
         }
+        
+        fileData.push({
+          name: file.name,
+          data: text
+        });
       }
       
-      // Create the torrent
-      WebTorrentClient.createTorrent(selectedFiles, {
-        name: torrentName,
-        comment: torrentDescription
-      }, function(torrent) {
-        // Update the torrent metadata in collection
-        Meteor.call('torrents.updateMeta', torrent.infoHash, {
-          description: torrentDescription,
-          fhirType: fhirType
-        }, function(err) {
-          setLoading(false);
-          
-          if (err) {
-            setError('Error updating torrent metadata: ' + err.message);
-          } else {
-            setSuccessMessage('Torrent created successfully! Magnet URI: ' + torrent.magnetURI);
-            // Reset form
-            setTorrentName('');
-            setTorrentDescription('');
-            setSelectedFiles([]);
-          }
-        });
+      // Call server method to create torrent
+      Meteor.call('torrents.create', torrentName, fileData, {
+        description: torrentDescription,
+        fhirType: fhirType
+      }, function(err, result) {
+        setLoading(false);
+        
+        if (err) {
+          setError('Error creating torrent: ' + err.message);
+        } else {
+          setSuccessMessage('Torrent created successfully! Magnet URI: ' + result.magnetURI);
+          // Reset form
+          setTorrentName('');
+          setTorrentDescription('');
+          setSelectedFiles([]);
+        }
       });
     } catch (err) {
       setLoading(false);
@@ -157,16 +160,16 @@ function CreateTorrent() {
     setLoading(true);
     setError('');
     
-    try {
-      WebTorrentClient.addTorrent(magnetUri, {}, function(torrent) {
-        setLoading(false);
+    Meteor.call('torrents.add', magnetUri, {}, function(err, result) {
+      setLoading(false);
+      
+      if (err) {
+        setError('Error adding torrent: ' + err.message);
+      } else {
         setSuccessMessage('Torrent added successfully!');
         setMagnetUri('');
-      });
-    } catch (err) {
-      setLoading(false);
-      setError('Error adding torrent: ' + err.message);
-    }
+      }
+    });
   }
   
   // Helper to read file as text

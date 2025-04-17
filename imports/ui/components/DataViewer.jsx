@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Meteor } from 'meteor/meteor';
 import { get } from 'lodash';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
@@ -11,8 +12,8 @@ import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
 import ToggleButton from '@mui/material/ToggleButton';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import TextField from '@mui/material/TextField';
+import Alert from '@mui/material/Alert';
 
-import { WebTorrentClient } from '../../api/torrents/webtorrent-client';
 import { FhirUtils } from '../../api/fhir/fhir-utils';
 
 function TabPanel(props) {
@@ -47,6 +48,7 @@ function DataViewer({ selectedTorrent }) {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
   const [viewFormat, setViewFormat] = useState('original');
+  const [error, setError] = useState('');
   
   // Fetch file contents when torrent is selected
   useEffect(function() {
@@ -58,48 +60,27 @@ function DataViewer({ selectedTorrent }) {
       }
       
       setLoading(true);
-      
-      const torrent = WebTorrentClient.getTorrent(selectedTorrent.infoHash);
-      if (!torrent) {
-        setLoading(false);
-        return;
-      }
+      setError('');
       
       try {
-        // Read contents of all files
-        const contents = {};
-        
-        // Wait for all files to be fetched
-        const promises = torrent.files.map(function(file) {
-          return new Promise(function(resolve) {
-            file.getBuffer(function(err, buffer) {
-              if (err) {
-                console.error("Error reading file:", err);
-                contents[file.name] = "Error reading file: " + err.message;
-              } else {
-                try {
-                  // Try to decode as UTF-8 text
-                  const text = new TextDecoder('utf-8').decode(buffer);
-                  contents[file.name] = text;
-                } catch (e) {
-                  contents[file.name] = "Binary data (not displayable)";
-                }
-              }
-              resolve();
-            });
-          });
-        });
-        
-        await Promise.all(promises);
-        
-        if (mounted) {
-          setFileContents(contents);
+        // Get all file contents from server
+        Meteor.call('torrents.getAllFileContents', selectedTorrent.infoHash, function(err, result) {
+          if (!mounted) return;
+          
           setLoading(false);
-        }
+          
+          if (err) {
+            console.error("Error fetching file contents:", err);
+            setError(`Error loading files: ${err.message}`);
+          } else {
+            setFileContents(result);
+          }
+        });
       } catch (err) {
         console.error("Error fetching file contents:", err);
         if (mounted) {
           setLoading(false);
+          setError(`Error: ${err.message}`);
         }
       }
     }
@@ -173,26 +154,6 @@ function DataViewer({ selectedTorrent }) {
     document.body.removeChild(element);
   }
   
-  // Detect language for syntax highlighting
-  function detectLanguage(content) {
-    try {
-      JSON.parse(content);
-      return 'json';
-    } catch (e) {
-      // Check if it's NDJSON
-      const lines = content.trim().split('\n');
-      if (lines.length > 0) {
-        try {
-          JSON.parse(lines[0]);
-          return 'json';
-        } catch (e) {
-          // Not JSON or NDJSON
-        }
-      }
-    }
-    return 'plaintext';
-  }
-  
   // If no torrent is selected
   if (!selectedTorrent) {
     return (
@@ -239,6 +200,10 @@ function DataViewer({ selectedTorrent }) {
           </Button>
         </Box>
       </Box>
+      
+      {error && (
+        <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>
+      )}
       
       {loading ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
@@ -293,4 +258,3 @@ function DataViewer({ selectedTorrent }) {
 }
 
 export default DataViewer;
-
