@@ -7,15 +7,10 @@ import Typography from '@mui/material/Typography';
 import { get } from 'lodash';
 import CircularProgress from '@mui/material/CircularProgress';
 import Alert from '@mui/material/Alert';
+import Paper from '@mui/material/Paper';
 
 import { Settings } from '../api/settings/settings';
-import TorrentList from './components/TorrentList';
-import PeerList from './components/PeerList';
-import DataViewer from './components/DataViewer';
-import CreateTorrent from './components/CreateTorrent';
 import DebugPanel from './components/DebugPanel';
-import FallbackMode from './components/FallbackMode';
-import { WebTorrentClient } from '../api/torrents/webtorrent-client';
 
 // Create a theme based on settings
 function createAppTheme() {
@@ -68,39 +63,15 @@ function createAppTheme() {
 // Note we're using a named function instead of an arrow function with const
 export function App() {
   const [theme, setTheme] = useState(createAppTheme());
-  const [selectedTorrent, setSelectedTorrent] = useState(null);
-  const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [fallbackMode, setFallbackMode] = useState(false);
+  const [error, setError] = useState(null);
   
   // Effect to initialize app and handle errors
   useEffect(function() {
     try {
       console.log('App component mounted');
       
-      // Show loading indicator initially
-      setIsLoading(true);
-      
-      // Check if WebTorrent initialization failed
-      // We'll look for an error message in session storage
-      const webtorrentError = sessionStorage.getItem('webtorrent-error');
-      if (webtorrentError) {
-        console.warn('Found WebTorrent error:', webtorrentError);
-        setError(`WebTorrent initialization error: ${webtorrentError}`);
-        setFallbackMode(true);
-        
-        // Clear the error so we don't show it again on refresh
-        sessionStorage.removeItem('webtorrent-error');
-      } else {
-        // Check if WebTorrent is actually initialized
-        const client = WebTorrentClient.getClient();
-        if (!client) {
-          console.warn('WebTorrent client not found, enabling fallback mode');
-          setFallbackMode(true);
-        }
-      }
-      
-      // Create a timeout to ensure the UI has time to initialize
+      // Simulate loading to ensure UI has time to initialize
       const timer = setTimeout(function() {
         setIsLoading(false);
         console.log('App loading complete');
@@ -113,14 +84,8 @@ export function App() {
       console.error('Error in App initialization:', err);
       setError(err.message || 'Unknown error occurred during application initialization');
       setIsLoading(false);
-      setFallbackMode(true);
     }
   }, []);
-  
-  // Handle torrent selection
-  function handleSelectTorrent(torrent) {
-    setSelectedTorrent(torrent);
-  }
   
   // Show loading state
   if (isLoading) {
@@ -131,37 +96,15 @@ export function App() {
     );
   }
   
-  // If fallback mode is enabled, show limited functionality UI
-  if (fallbackMode) {
-    return (
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
-        <Box sx={{ flexGrow: 1, m: 2 }}>
-          <Typography variant="h4" component="h1" gutterBottom>
-            FHIR P2P Data Sharing
-          </Typography>
-          
-          <FallbackMode error={error} />
-          
-          {/* Debug panel works in fallback mode too */}
-          <DebugPanel />
-        </Box>
-      </ThemeProvider>
-    );
-  }
-  
   // Show error if there is one
   if (error) {
     return (
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
-        <Box sx={{ m: 2 }}>
-          <Alert severity="error">
-            Error: {error}
-          </Alert>
-          <DebugPanel />
-        </Box>
-      </ThemeProvider>
+      <Box sx={{ m: 2 }}>
+        <Alert severity="error">
+          Error: {error}
+        </Alert>
+        <DebugPanel />
+      </Box>
     );
   }
   
@@ -174,21 +117,54 @@ export function App() {
           FHIR P2P Data Sharing
         </Typography>
         
+        <Alert severity="info" sx={{ mb: 2 }}>
+          WebTorrent client is currently disabled in the browser. 
+          This is a minimal UI version for development purposes.
+        </Alert>
+        
         <Grid container spacing={2}>
           <Grid item xs={12} md={6}>
-            <TorrentList onSelectTorrent={handleSelectTorrent} />
+            <Paper sx={{ p: 2 }}>
+              <Typography variant="h6" component="h2" gutterBottom>
+                Available Torrents
+              </Typography>
+              <Typography variant="body1">
+                WebTorrent client is disabled. Torrents will be displayed here when the client is enabled.
+              </Typography>
+            </Paper>
           </Grid>
           
           <Grid item xs={12} md={6}>
-            <PeerList />
+            <Paper sx={{ p: 2 }}>
+              <Typography variant="h6" component="h2" gutterBottom>
+                Connected Peers
+              </Typography>
+              <Typography variant="body1">
+                WebTorrent client is disabled. Peers will be displayed here when the client is enabled.
+              </Typography>
+            </Paper>
           </Grid>
           
           <Grid item xs={12}>
-            <DataViewer selectedTorrent={selectedTorrent} />
+            <Paper sx={{ p: 2 }}>
+              <Typography variant="h6" component="h2" gutterBottom>
+                Data Viewer
+              </Typography>
+              <Typography variant="body1">
+                WebTorrent client is disabled. FHIR data will be displayed here when the client is enabled.
+              </Typography>
+            </Paper>
           </Grid>
           
           <Grid item xs={12}>
-            <CreateTorrent />
+            <Paper sx={{ p: 2 }}>
+              <Typography variant="h6" component="h2" gutterBottom>
+                Create/Add Torrent
+              </Typography>
+              <Typography variant="body1">
+                WebTorrent client is disabled. Torrent creation will be available here when the client is enabled.
+              </Typography>
+            </Paper>
           </Grid>
         </Grid>
         

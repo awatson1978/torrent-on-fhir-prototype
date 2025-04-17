@@ -10,14 +10,13 @@ import AccordionDetails from '@mui/material/AccordionDetails';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import Button from '@mui/material/Button';
 import { Settings } from '../../api/settings/settings';
-import { WebTorrentClient } from '../../api/torrents/webtorrent-client';
 
 // Debug component to display application state and troubleshoot issues
 function DebugPanel() {
   const [isOpen, setIsOpen] = useState(false);
   const [runtimeInfo, setRuntimeInfo] = useState({
     meteorStatus: 'Checking...',
-    webTorrentStatus: 'Checking...',
+    webTorrentStatus: 'Disabled',
     subscriptions: 'Checking...',
     settings: 'Checking...',
   });
@@ -40,21 +39,11 @@ function DebugPanel() {
       }));
     }
     
-    // Check WebTorrent status
-    try {
-      const client = WebTorrentClient.getClient();
-      setRuntimeInfo(prev => ({
-        ...prev,
-        webTorrentStatus: client ? 
-          `Initialized (PeerId: ${client.peerId || 'unknown'})` : 
-          'Not initialized'
-      }));
-    } catch (error) {
-      setRuntimeInfo(prev => ({
-        ...prev,
-        webTorrentStatus: `Error: ${error.message}`
-      }));
-    }
+    // Check WebTorrent status (it's disabled, so just show that)
+    setRuntimeInfo(prev => ({
+      ...prev,
+      webTorrentStatus: 'Disabled in this version'
+    }));
     
     // Check subscription status
     try {
@@ -115,26 +104,6 @@ function DebugPanel() {
     });
   }
   
-  // Retry WebTorrent initialization
-  function retryWebTorrent() {
-    try {
-      WebTorrentClient.initialize().then(function(client) {
-        alert(`WebTorrent initialized successfully! PeerId: ${client ? client.peerId : 'unknown'}`);
-        // Update status
-        setRuntimeInfo(prev => ({
-          ...prev,
-          webTorrentStatus: client ? 
-            `Initialized (PeerId: ${client.peerId || 'unknown'})` : 
-            'Not initialized'
-        }));
-      }).catch(function(err) {
-        alert(`WebTorrent initialization failed: ${err.message}`);
-      });
-    } catch (error) {
-      alert(`Error: ${error.message}`);
-    }
-  }
-  
   return (
     <>
       <Button 
@@ -164,9 +133,6 @@ function DebugPanel() {
           <Box sx={{ mt: 2 }}>
             <Button variant="contained" color="primary" onClick={testConnection} sx={{ mr: 1 }}>
               Test Server
-            </Button>
-            <Button variant="contained" color="primary" onClick={retryWebTorrent}>
-              Retry WebTorrent
             </Button>
           </Box>
           

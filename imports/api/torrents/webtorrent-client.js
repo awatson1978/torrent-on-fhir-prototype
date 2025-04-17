@@ -2,7 +2,6 @@ import { Meteor } from 'meteor/meteor';
 import { get } from 'lodash';
 import { Settings } from '../settings/settings';
 import { TorrentsCollection } from './torrents';
-import { BrowserWebTorrent } from './browser-webtorrent';
 
 // We'll load WebTorrent dynamically on the client
 let client = null;
@@ -10,6 +9,9 @@ let client = null;
 // Variables to track initialization state
 let isInitializing = false;
 let initializePromise = null;
+
+// Flag to enable/disable WebTorrent client
+const WEBTORRENT_ENABLED = false; // Set to false to disable the WebTorrent client
 
 /**
  * WebTorrent client service
@@ -24,6 +26,12 @@ export const WebTorrentClient = {
    */
   initialize: function() {
     if (!Meteor.isClient) return Promise.resolve(null);
+    
+    // Check if WebTorrent is disabled
+    if (!WEBTORRENT_ENABLED) {
+      console.log('WebTorrent client initialization skipped - disabled in this version');
+      return Promise.resolve(null);
+    }
     
     // Return existing client if already initialized
     if (client) {
@@ -111,7 +119,12 @@ export const WebTorrentClient = {
    * @param {Function} callback - Called when torrent is ready
    */
   addTorrent: function(torrentId, opts = {}, callback) {
-    if (!Meteor.isClient) return null;
+    if (!Meteor.isClient || !WEBTORRENT_ENABLED) {
+      if (callback && typeof callback === 'function') {
+        callback(null);
+      }
+      return;
+    }
     
     const self = this;
     const torrentClient = this.getClient();
@@ -165,7 +178,12 @@ export const WebTorrentClient = {
    * @param {Function} callback - Called when torrent is ready
    */
   createTorrent: function(files, opts = {}, callback) {
-    if (!Meteor.isClient) return null;
+    if (!Meteor.isClient || !WEBTORRENT_ENABLED) {
+      if (callback && typeof callback === 'function') {
+        callback(null);
+      }
+      return;
+    }
     
     const self = this;
     const torrentClient = this.getClient();
@@ -212,13 +230,10 @@ export const WebTorrentClient = {
     }
   },
   
-  /**
-   * Remove a torrent from the client
-   * @param {String} infoHash - Info hash of the torrent to remove
-   * @param {Boolean} removeFiles - Whether to remove downloaded files
-   */
+  // Other methods remain the same, but add WEBTORRENT_ENABLED check
+  
   removeTorrent: function(infoHash, removeFiles = false) {
-    if (!Meteor.isClient) return;
+    if (!Meteor.isClient || !WEBTORRENT_ENABLED) return;
     
     const torrent = this._torrents.get(infoHash);
     
@@ -235,28 +250,17 @@ export const WebTorrentClient = {
     }
   },
   
-  /**
-   * Get a torrent by info hash
-   * @param {String} infoHash - Info hash of the torrent
-   * @return {Object} The torrent instance
-   */
   getTorrent: function(infoHash) {
+    if (!WEBTORRENT_ENABLED) return null;
     return this._torrents.get(infoHash);
   },
   
-  /**
-   * Get all active torrents
-   * @return {Array} Array of torrent instances
-   */
   getAllTorrents: function() {
+    if (!WEBTORRENT_ENABLED) return [];
     return Array.from(this._torrents.values());
   },
   
-  /**
-   * Setup event handlers for a torrent
-   * @private
-   * @param {Object} torrent - The torrent instance
-   */
+  // Rest of the methods remain the same
   _setupTorrentEvents: function(torrent) {
     const self = this;
     
@@ -290,11 +294,6 @@ export const WebTorrentClient = {
     });
   },
   
-  /**
-   * Update or insert torrent record in collection
-   * @private
-   * @param {Object} torrent - The torrent instance
-   */
   _updateTorrentRecord: function(torrent) {
     try {
       const files = torrent.files.map(function(file) {
@@ -352,18 +351,20 @@ export const WebTorrentClient = {
   }
 };
 
-// Initialize client on startup if we're on the client
+// Skip initialization on startup if WebTorrent is disabled
 Meteor.startup(function() {
-  if (Meteor.isClient) {
+  if (Meteor.isClient && WEBTORRENT_ENABLED) {
     // Delay WebTorrent initialization to ensure all client libraries are loaded
     Meteor.setTimeout(function() {
-      // WebTorrentClient.initialize()
-      //   .then(function(client) {
-      //     console.log('WebTorrent client initialized from startup');
-      //   })
-      //   .catch(function(err) {
-      //     console.error('Failed to initialize WebTorrent client from startup:', err);
-      //   });
+      WebTorrentClient.initialize()
+        .then(function(client) {
+          console.log('WebTorrent client initialized from startup');
+        })
+        .catch(function(err) {
+          console.error('Failed to initialize WebTorrent client from startup:', err);
+        });
     }, 1000);
+  } else if (Meteor.isClient) {
+    console.log('WebTorrent client disabled, skipping initialization');
   }
 });
