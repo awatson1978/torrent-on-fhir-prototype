@@ -1,0 +1,32 @@
+{
+  "public": {
+    "webtorrent": {
+      "trackers": [
+        "wss://tracker.openwebtorrent.com",
+        "wss://tracker.btorrent.xyz",
+        "wss://tracker.fastcast.nz"
+      ],
+      "announceList": [
+        ["wss://tracker.openwebtorrent.com"],
+        ["wss://tracker.btorrent.xyz"],
+        ["wss://tracker.fastcast.nz"]
+      ],
+      "dht": true,
+      "webSeeds": true
+    },
+    "fhir": {
+      "validationLevel": "warning",
+      "defaultFormat": "json"
+    },
+    "ui": {
+      "theme": "light",
+      "density": "comfortable"
+    }
+  },
+  "private": {
+    "storage": {
+      "tempPath": "/tmp/fhir-torrents"
+    },
+    "debug": true
+  }
+}

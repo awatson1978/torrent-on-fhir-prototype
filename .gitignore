@@ -1,1 +1,48 @@
+# Meteor builds
+.meteor/local
+.meteor/meteorite
+
+# Node dependencies
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build directories
+build/
+dist/
+bundle/
+
+# Environment variables
+.env
+
+# Logs
+logs
+*.log
+
+# Mac files
+.DS_Store
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# Test coverage
+coverage/
+
+# Meteor desktop
+.desktop/
+.meteor-desktop/
+
+# Temporary files
+*.tmp
+*.bak
+temp/
+tmp/
+
+# WebTorrent temporary data
+/data/fhir-torrents/
