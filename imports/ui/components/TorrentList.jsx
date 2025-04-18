@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { get } from 'lodash';
@@ -43,6 +43,10 @@ function formatSpeed(bytesPerSec) {
 }
 
 function TorrentList(props) {
+
+  const [successMessage, setSuccessMessage] = useState('');
+  
+
   // Subscribe to torrents and get data
   const { torrents, isLoading, isReady } = useTracker(function() {
     console.log('TorrentList: Rerunning tracker function');
@@ -133,6 +137,15 @@ function TorrentList(props) {
           Refresh
         </Button>
       </Box>
+      {successMessage && (
+        <Alert 
+          severity="success" 
+          sx={{ mb: 2 }}
+          onClose={() => setSuccessMessage('')}
+        >
+          {successMessage}
+        </Alert>
+      )}
       
       {isLoading ? (
         <LinearProgress />

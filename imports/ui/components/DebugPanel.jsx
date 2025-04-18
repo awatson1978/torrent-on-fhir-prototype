@@ -13,6 +13,8 @@ import { Settings } from '../../api/settings/settings';
 
 // Debug component to display application state and troubleshoot issues
 function DebugPanel() {
+  const [loading, setLoading] = useState(false);
+  
   const [isOpen, setIsOpen] = useState(false);
   const [runtimeInfo, setRuntimeInfo] = useState({
     meteorStatus: 'Checking...',
