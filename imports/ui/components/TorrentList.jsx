@@ -15,6 +15,7 @@ import Button from '@mui/material/Button';
 import IconButton from '@mui/material/IconButton';
 import DeleteIcon from '@mui/icons-material/Delete';
 import PauseIcon from '@mui/icons-material/Pause';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import Box from '@mui/material/Box';
 import Alert from '@mui/material/Alert';
@@ -93,6 +94,10 @@ function TorrentList(props) {
   // Force refresh subscriptions
   function handleRefresh() {
     Meteor.subscribe('torrents.all');
+  }
+  function copyMagnetUri(magnetUri) {
+    navigator.clipboard.writeText(magnetUri);
+    setSuccessMessage('Magnet URI copied to clipboard!');
   }
   
   return (
@@ -187,6 +192,16 @@ function TorrentList(props) {
                     >
                       <DeleteIcon />
                     </IconButton>
+                    <IconButton 
+                      size="small" 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyMagnetUri(torrent.magnetURI);
+                      }}
+                    >
+                      <ContentCopyIcon />
+                    </IconButton>
+                    
                   </TableCell>
                 </TableRow>
               ))}
