@@ -19,7 +19,7 @@
       "defaultFormat": "json"
     },
     "ui": {
-      "theme": "dark",
+      "theme": "light",
       "density": "comfortable"
     }
   },

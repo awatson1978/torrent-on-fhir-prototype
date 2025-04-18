@@ -103,6 +103,56 @@ function DebugPanel() {
       }
     });
   }
+  function repairTorrents() {
+    setLoading(true);
+    Meteor.call('debug.repairTorrents', function(err, result) {
+      setLoading(false);
+      if (err) {
+        console.error('Repair error:', err);
+        alert('Error repairing torrents: ' + err.message);
+      } else {
+        console.log('Repair result:', result);
+        alert(`Repair completed:\n- Added ${result.added.length} torrents to client\n- Saved ${result.saved.length} torrents to database`);
+      }
+    });
+  }
+  function checkServerStatus() {
+    setLoading(true);
+    Meteor.call('debug.getServerStatus', function(err, result) {
+      setLoading(false);
+      if (err) {
+        console.error('Debug error:', err);
+        alert('Error getting server status: ' + err.message);
+      } else {
+        console.log('Server Status:', result);
+        
+        // Format the result for display
+        const clientTorrents = result.client.torrents || [];
+        const dbTorrents = result.database.torrents || [];
+        
+        const message = `WebTorrent Client:
+          - Initialized: ${result.client.initialized ? 'Yes' : 'No'}
+          - Active Torrents: ${clientTorrents.length}
+          ${clientTorrents.map(t => `  - ${t.name || 'Unnamed'} (${t.infoHash.substring(0, 8)}...)`).join('\n')}
+          
+          Database:
+          - Torrents: ${dbTorrents.length}
+          ${dbTorrents.map(t => `  - ${t.name || 'Unnamed'} (${t.infoHash.substring(0, 8)}...)`).join('\n')}
+          
+          Subscriptions:
+          - Status: ${result.subscription.ready ? 'Ready' : 'Loading'}
+          - Count: ${result.subscription.count}
+          
+          WebTorrent Trackers:
+          ${result.client.trackers.join('\n')}
+        `;
+        
+        // Display in a pre-formatted alert or modal
+        const debugWindow = window.open('', 'Debug Info', 'width=800,height=600');
+        debugWindow.document.write(`<pre>${message}</pre>`);
+      }
+    });
+  }
   
   return (
     <>
@@ -141,6 +191,22 @@ function DebugPanel() {
               sx={{ mr: 1 }}
             >
               Test P2P
+            </Button>
+            <Button 
+              variant="contained" 
+              color="secondary" 
+              onClick={checkServerStatus}
+              disabled={loading}
+            >
+              Full Server Status
+            </Button>
+            <Button 
+              variant="contained" 
+              color="warning" 
+              onClick={repairTorrents}
+              disabled={loading}
+            >
+              Repair Torrents
             </Button>
           </Box>
           

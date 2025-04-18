@@ -154,13 +154,16 @@ Meteor.methods({
    * @param {Boolean} removeFiles - Whether to remove downloaded files
    * @return {Boolean} Success
    */
-  'torrents.remove': function(infoHash, removeFiles = false) {
+  'torrents.remove': async function(infoHash, removeFiles = false) {
     check(infoHash, String);
     check(removeFiles, Boolean);
     
-    console.log('Removing torrent:', infoHash, 'with files:', removeFiles);
-    
-    return Promise.await(WebTorrentServer.removeTorrent(infoHash, removeFiles));
+    try {
+      const result = await WebTorrentServer.removeTorrent(infoHash, removeFiles);
+      return result;
+    } catch (error) {
+      throw new Meteor.Error('remove-failed', error.message || 'Failed to remove torrent');
+    }
   },
   
   /**
@@ -169,11 +172,19 @@ Meteor.methods({
    * @param {String} filename - Name of the file to get
    * @return {String} File contents
    */
-  'torrents.getFileContents': function(infoHash, filename) {
+  'torrents.getFileContents': async function(infoHash, filename) {
     check(infoHash, String);
     check(filename, String);
     
-    return Promise.await(WebTorrentServer.getFileContents(infoHash, filename));
+    try {
+      const content = await WebTorrentServer.getFileContents(infoHash, filename);
+      return content;
+    } catch (error) {
+      throw new Meteor.Error(
+        error.error || 'error', 
+        error.reason || error.message || 'Failed to get file contents'
+      );
+    }
   },
   
   /**
@@ -181,10 +192,19 @@ Meteor.methods({
    * @param {String} infoHash - Info hash of the torrent
    * @return {Object} Object with filename keys and content values
    */
-  'torrents.getAllFileContents': function(infoHash) {
+  'torrents.getAllFileContents': async function(infoHash) {
     check(infoHash, String);
     
-    return Promise.await(WebTorrentServer.getAllFileContents(infoHash));
+    try {
+      const contents = await WebTorrentServer.getAllFileContents(infoHash);
+      return contents;
+    } catch (error) {
+      // Properly throw the error for the client
+      throw new Meteor.Error(
+        error.error || 'error', 
+        error.reason || error.message || 'Unknown error'
+      );
+    }
   },
   
   /**

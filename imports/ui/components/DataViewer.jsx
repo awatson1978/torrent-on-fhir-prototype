@@ -52,7 +52,12 @@ function DataViewer({ selectedTorrent }) {
       
       if (err) {
         console.error("Error fetching file contents:", err);
-        setError(`Error loading files: ${err.message}`);
+        // More specific error message
+        if (err.error === 'not-found') {
+          setError(`This torrent exists in the database but its data is not available on this server. Try adding it using the magnet link.`);
+        } else {
+          setError(`Error loading files: ${err.message || err.reason || 'Unknown error'}`);
+        }
       } else {
         setFileContents(result || {});
       }

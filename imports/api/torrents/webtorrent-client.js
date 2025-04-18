@@ -294,7 +294,7 @@ export const WebTorrentClient = {
     });
   },
   
-  _updateTorrentRecord: function(torrent) {
+  _updateTorrentRecord: async function(torrent) {
     try {
       const files = torrent.files.map(function(file) {
         return {
@@ -325,10 +325,10 @@ export const WebTorrentClient = {
       };
       
       // Check if torrent exists in collection
-      const existing = TorrentsCollection.findOne({ infoHash: torrent.infoHash });
+      const existing = await TorrentsCollection.findOneAsync({ infoHash: torrent.infoHash });
       
       if (existing) {
-        TorrentsCollection.update(
+        await TorrentsCollection.updateAsync(
           { infoHash: torrent.infoHash },
           { $set: torrentData }
         );
@@ -343,7 +343,7 @@ export const WebTorrentClient = {
           profile: ''
         };
         
-        TorrentsCollection.insert(torrentData);
+        await TorrentsCollection.insertAsync(torrentData);
       }
     } catch (err) {
       console.error('Error updating torrent record:', err);
