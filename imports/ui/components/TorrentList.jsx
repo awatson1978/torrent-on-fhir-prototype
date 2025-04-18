@@ -103,17 +103,21 @@ function TorrentList(props) {
   
   // Force refresh subscriptions
   function handleRefresh() {
-    setLoading(true);
+    Meteor.call('debug.checkTorrentConnection', function(err, result) {
+      if (err) {
+        console.error('Error checking connection:', err);
+      } else {
+        console.log('Connection status:', result);
+      }
+    });
     
     // Force new subscription
     Meteor.subscribe('torrents.all', {
       onReady: function() {
-        setLoading(false);
+        console.log('Torrents subscription refreshed');
       },
       onError: function(error) {
         console.error('Error refreshing torrents:', error);
-        setLoading(false);
-        setError('Error refreshing: ' + error.message);
       }
     });
   }

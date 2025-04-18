@@ -20,18 +20,27 @@ Meteor.methods({
     
     console.log('Adding torrent from magnet URI:', magnetUri);
     
-    const result = await WebTorrentServer.addTorrent(magnetUri);
+    try {
+      const result = await WebTorrentServer.addTorrent(magnetUri);
+        
+      // Update metadata
+      if (Object.keys(metadata).length > 0) {
+        try {
+          await Meteor.callAsync('torrents.updateMeta', result.infoHash, metadata);
+        } catch (metaError) {
+          console.error('Error updating metadata:', metaError);
+        }
+      }
       
-    // Update metadata
-    if (Object.keys(metadata).length > 0) {
-      Meteor.call('torrents.updateMeta', result.infoHash, metadata);
+      return {
+        infoHash: result.infoHash,
+        name: result.name,
+        magnetURI: result.magnetURI
+      };
+    } catch (error) {
+      console.error('Error adding torrent:', error);
+      throw new Meteor.Error('add-failed', error.message || 'Failed to add torrent');
     }
-    
-    return {
-      infoHash: result.infoHash,
-      name: result.name,
-      magnetURI: result.magnetURI
-    };
   },
   
   /**
@@ -66,86 +75,91 @@ Meteor.methods({
       }
     }
     
-    // Write the files to disk temporarily
-    const tempPath = path.join(Settings.get('private.storage.tempPath', '/tmp/fhir-torrents'), `temp-${Date.now()}`);
-    
-    if (!fs.existsSync(tempPath)) {
-      fs.mkdirSync(tempPath, { recursive: true });
-    }
-    
-    const tempFiles = [];
-    
-    fileData.forEach(function(file) {
-      const filePath = path.join(tempPath, file.name);
-      fs.writeFileSync(filePath, file.data);
-      tempFiles.push(filePath);
-    });
-    
-    // Create the torrent
-    const result = await WebTorrentServer.createTorrent(tempPath, {
-      name: name,
-      comment: metadata.description || ''
-    });
-    
-    // Clean up temp files (after a delay to ensure the torrent is created)
-    Meteor.setTimeout(function() {
-      tempFiles.forEach(function(file) {
-        try {
-          fs.unlinkSync(file);
-        } catch (e) {
-          console.error('Error removing temp file:', e);
-        }
+    try {
+      // Write the files to disk temporarily
+      const tempPath = path.join(Settings.get('private.storage.tempPath', '/tmp/fhir-torrents'), `temp-${Date.now()}`);
+      
+      if (!fs.existsSync(tempPath)) {
+        fs.mkdirSync(tempPath, { recursive: true });
+      }
+      
+      const tempFiles = [];
+      
+      fileData.forEach(function(file) {
+        const filePath = path.join(tempPath, file.name);
+        fs.writeFileSync(filePath, file.data);
+        tempFiles.push(filePath);
       });
       
-      try {
-        fs.rmdirSync(tempPath);
-      } catch (e) {
-        console.error('Error removing temp directory:', e);
-      }
-    }, 5000);
-    
-    // Instead of calling updateMeta, directly update the torrent record here
-    // This ensures we're working with a torrent that exists in the database
-    if (Object.keys(metadata).length > 0) {
-      try {
-        // Wait a bit for the torrent to be saved to the database
-        await new Promise(resolve => Meteor.setTimeout(resolve, 500));
-        
-        // Check if torrent exists in database
-        const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash: result.infoHash });
-        
-        if (torrentRecord) {
-          // Update with metadata
-          const updateObj = {};
-          
-          // Only include allowed fields
-          const allowedFields = ['description', 'fhirType', 'meta'];
-          Object.keys(metadata).forEach(function(key) {
-            if (allowedFields.includes(key)) {
-              updateObj[key] = metadata[key];
-            }
-          });
-          
-          if (Object.keys(updateObj).length > 0) {
-            await TorrentsCollection.updateAsync(
-              { infoHash: result.infoHash },
-              { $set: updateObj }
-            );
+      // Create the torrent
+      const result = await WebTorrentServer.createTorrent(tempPath, {
+        name: name,
+        comment: metadata.description || ''
+      });
+      
+      // Clean up temp files (after a delay to ensure the torrent is created)
+      Meteor.setTimeout(function() {
+        tempFiles.forEach(function(file) {
+          try {
+            fs.unlinkSync(file);
+          } catch (e) {
+            console.error('Error removing temp file:', e);
           }
-        } else {
-          console.log(`Torrent with infoHash ${result.infoHash} not found in database yet.`);
+        });
+        
+        try {
+          fs.rmdirSync(tempPath);
+        } catch (e) {
+          console.error('Error removing temp directory:', e);
         }
-      } catch (err) {
-        console.error('Error updating torrent metadata:', err);
-        // Don't throw the error, just log it - we still want to return the torrent info
+      }, 5000);
+      
+      // Instead of calling updateMeta, directly update the torrent record here
+      // This ensures we're working with a torrent that exists in the database
+      if (Object.keys(metadata).length > 0) {
+        try {
+          // Wait a bit for the torrent to be saved to the database
+          await new Promise(resolve => Meteor.setTimeout(resolve, 500));
+          
+          // Check if torrent exists in database
+          const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash: result.infoHash });
+          
+          if (torrentRecord) {
+            // Update with metadata
+            const updateObj = {};
+            
+            // Only include allowed fields
+            const allowedFields = ['description', 'fhirType', 'meta'];
+            Object.keys(metadata).forEach(function(key) {
+              if (allowedFields.includes(key)) {
+                updateObj[key] = metadata[key];
+              }
+            });
+            
+            if (Object.keys(updateObj).length > 0) {
+              await TorrentsCollection.updateAsync(
+                { infoHash: result.infoHash },
+                { $set: updateObj }
+              );
+            }
+          } else {
+            console.log(`Torrent with infoHash ${result.infoHash} not found in database yet.`);
+          }
+        } catch (err) {
+          console.error('Error updating torrent metadata:', err);
+          // Don't throw the error, just log it - we still want to return the torrent info
+        }
       }
+      
+      return {
+        infoHash: result.infoHash,
+        name: result.name,
+        magnetURI: result.magnetURI
+      };
+    } catch (error) {
+      console.error('Error creating torrent:', error);
+      throw new Meteor.Error('create-failed', error.message || 'Failed to create torrent');
     }
-    
-    return {
-      infoHash: result.infoHash,
-      name: result.name,
-      magnetURI: result.magnetURI
-    };
   },
   
   /**
@@ -212,19 +226,51 @@ Meteor.methods({
    * @param {String} infoHash - Info hash of the torrent
    * @return {Boolean} Success
    */
-  'torrents.pause': function(infoHash) {
+  'torrents.pause': async function(infoHash) {
     check(infoHash, String);
     
     const torrent = WebTorrentServer.getTorrent(infoHash);
     if (!torrent) {
-      throw new Meteor.Error('not-found', 'Torrent not found');
+      // Try to repair torrent by reloading it
+      try {
+        console.log('Torrent not found in client, attempting to reload it');
+        const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+        
+        if (!torrentRecord) {
+          throw new Meteor.Error('not-found', 'Torrent not found in database');
+        }
+        
+        if (torrentRecord.magnetURI) {
+          await WebTorrentServer.addTorrent(torrentRecord.magnetURI);
+          // Try to get the torrent again after adding it
+          const reloadedTorrent = WebTorrentServer.getTorrent(infoHash);
+          if (!reloadedTorrent) {
+            throw new Meteor.Error('load-failed', 'Failed to load torrent');
+          }
+          
+          reloadedTorrent.pause();
+          
+          // Update status in collection
+          await TorrentsCollection.updateAsync(
+            { infoHash },
+            { $set: { 'status.state': 'paused' } }
+          );
+          
+          return true;
+        } else {
+          throw new Meteor.Error('no-magnet', 'Torrent record has no magnet URI');
+        }
+      } catch (error) {
+        console.error('Error reloading torrent:', error);
+        throw new Meteor.Error('reload-failed', 'Failed to reload torrent: ' + error.message);
+      }
     }
     
     console.log('Pausing torrent:', infoHash);
     torrent.pause();
     
     // Update status in collection
-    TorrentsCollection.update(
+    await TorrentsCollection.updateAsync(
       { infoHash },
       { $set: { 'status.state': 'paused' } }
     );
@@ -237,19 +283,45 @@ Meteor.methods({
    * @param {String} infoHash - Info hash of the torrent
    * @return {Boolean} Success
    */
-  'torrents.resume': function(infoHash) {
+  'torrents.resume': async function(infoHash) {
     check(infoHash, String);
     
     const torrent = WebTorrentServer.getTorrent(infoHash);
     if (!torrent) {
-      throw new Meteor.Error('not-found', 'Torrent not found');
+      // Try to repair torrent by reloading it
+      try {
+        console.log('Torrent not found in client, attempting to reload it');
+        const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+        
+        if (!torrentRecord) {
+          throw new Meteor.Error('not-found', 'Torrent not found in database');
+        }
+        
+        if (torrentRecord.magnetURI) {
+          await WebTorrentServer.addTorrent(torrentRecord.magnetURI);
+          // The torrent will start downloading automatically
+          
+          // Update status in collection
+          await TorrentsCollection.updateAsync(
+            { infoHash },
+            { $set: { 'status.state': 'downloading' } }
+          );
+          
+          return true;
+        } else {
+          throw new Meteor.Error('no-magnet', 'Torrent record has no magnet URI');
+        }
+      } catch (error) {
+        console.error('Error reloading torrent:', error);
+        throw new Meteor.Error('reload-failed', 'Failed to reload torrent: ' + error.message);
+      }
     }
     
     console.log('Resuming torrent:', infoHash);
     torrent.resume();
     
     // Update status in collection
-    TorrentsCollection.update(
+    await TorrentsCollection.updateAsync(
       { infoHash },
       { $set: { 'status.state': torrent.done ? 'seeding' : 'downloading' } }
     );
@@ -278,13 +350,13 @@ Meteor.methods({
       }
     });
     
-    // Make sure torrent exists - use findOneAsync instead of findOne
+    // Make sure torrent exists - use findOneAsync
     const torrent = await TorrentsCollection.findOneAsync({ infoHash });
     if (!torrent) {
       throw new Meteor.Error('not-found', 'Torrent not found');
     }
     
-    // Use updateAsync instead of update
+    // Use updateAsync
     return await TorrentsCollection.updateAsync(
       { infoHash }, 
       { $set: updateObj }

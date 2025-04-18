@@ -15,6 +15,7 @@ let WebTorrent = null;
 try {
   // Try to load synchronously - this is key to avoid the 'await' issue
   WebTorrent = require('webtorrent');
+  console.log('WebTorrent loaded successfully at startup');
 } catch (err) {
   console.error('Error requiring WebTorrent directly, will try again during initialization:', err);
 }
@@ -50,21 +51,22 @@ export const WebTorrentServer = {
     initializePromise = new Promise(function(resolve, reject) {
       try {
         // Try to load WebTorrent
-        let WebTorrent;
-        try {
-          WebTorrent = require('webtorrent');
-          console.log('WebTorrent loaded successfully');
-        } catch (err) {
-          console.error('Error requiring WebTorrent:', err);
-          // Try an alternative way to load WebTorrent
+        if (!WebTorrent) {
           try {
-            const npmPath = require('path').join(process.cwd(), 'node_modules', 'webtorrent');
-            WebTorrent = require(npmPath);
-            console.log('WebTorrent loaded from npm path');
-          } catch (err2) {
-            console.error('Failed to load WebTorrent from npm path:', err2);
-            reject(new Error('Could not load WebTorrent module'));
-            return;
+            WebTorrent = require('webtorrent');
+            console.log('WebTorrent loaded successfully during initialization');
+          } catch (err) {
+            console.error('Error requiring WebTorrent:', err);
+            // Try an alternative way to load WebTorrent
+            try {
+              const npmPath = require('path').join(process.cwd(), 'node_modules', 'webtorrent');
+              WebTorrent = require(npmPath);
+              console.log('WebTorrent loaded from npm path');
+            } catch (err2) {
+              console.error('Failed to load WebTorrent from npm path:', err2);
+              reject(new Error('Could not load WebTorrent module'));
+              return;
+            }
           }
         }
         
@@ -100,6 +102,10 @@ export const WebTorrentServer = {
           });
           
           console.log('WebTorrent server initialized successfully!');
+          
+          // Now that client is initialized, load all existing torrents from database
+          this._loadTorrentsFromDatabase();
+          
           isInitializing = false;
           resolve(client);
         } catch (err) {
@@ -112,32 +118,61 @@ export const WebTorrentServer = {
         isInitializing = false;
         reject(err);
       }
-    });
+    }.bind(this));
     
     return initializePromise;
   },
   
-  // Rest of the methods remain the same
+  /**
+   * Load all existing torrents from the database
+   * @private
+   */
+  _loadTorrentsFromDatabase: async function() {
+    try {
+      console.log('Loading existing torrents from database...');
+      
+      const torrents = await TorrentsCollection.find({}).fetchAsync();
+      console.log(`Found ${torrents.length} torrents in database`);
+      
+      if (torrents.length === 0) {
+        return;
+      }
+      
+      // Add each torrent to the client
+      for (const torrent of torrents) {
+        if (torrent.magnetURI) {
+          try {
+            console.log(`Adding torrent ${torrent.name} (${torrent.infoHash}) to client`);
+            await this.addTorrent(torrent.magnetURI);
+          } catch (err) {
+            console.error(`Error adding torrent ${torrent.infoHash} to client:`, err);
+          }
+        } else {
+          console.warn(`Torrent ${torrent.infoHash} has no magnetURI, cannot add to client`);
+        }
+      }
+      
+      console.log('Finished loading torrents from database');
+    } catch (err) {
+      console.error('Error loading torrents from database:', err);
+    }
+  },
+  
+  /**
+   * Get the WebTorrent client instance
+   * @return {Object} The WebTorrent client
+   */
   getClient: function() {
     return client;
   },
   
+  /**
+   * Add a torrent to the client
+   * @param {String} torrentId - Magnet URI, info hash, or torrent file
+   * @param {Object} opts - Options for the torrent
+   * @return {Promise<Object>} The added torrent
+   */
   addTorrent: function(torrentId, opts = {}) {
-    const self = this;
-    
-    return new Promise(function(resolve, reject) {
-      try {
-
-        const torrentClient = self.getClient();
-        
-        // ...rest of method...
-      } catch (err) {
-        reject(err);
-      }
-    });
-  },
-  
-  createTorrent: function(files, opts = {}) {
     const self = this;
     
     return new Promise(function(resolve, reject) {
@@ -146,7 +181,75 @@ export const WebTorrentServer = {
         
         if (!torrentClient) {
           return self.initialize().then(function(initializedClient) {
-            return self.createTorrent(files, opts);
+            return self.addTorrent(torrentId, opts);
+          }).then(resolve).catch(reject);
+        }
+        
+        // Check if torrent already exists in client
+        try {
+          const parseTorrent = require('parse-torrent');
+          const parsedTorrent = parseTorrent(torrentId);
+          const existingTorrent = self.getTorrent(parsedTorrent.infoHash);
+          
+          if (existingTorrent) {
+            console.log(`Torrent ${parsedTorrent.infoHash} already exists in client, returning existing instance`);
+            return resolve(existingTorrent);
+          }
+        } catch (parseErr) {
+          // If parse-torrent fails, we'll just continue with the add operation
+          console.warn('Could not parse torrentId:', parseErr.message);
+        }
+        
+        // Set the download path
+        const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+        const options = {
+          path: storagePath,
+          ...opts
+        };
+        
+        console.log(`Adding torrent to client with path: ${storagePath}`);
+        
+        torrentClient.add(torrentId, options, function(torrent) {
+          // Store reference to the torrent
+          self._torrents.set(torrent.infoHash, torrent);
+          
+          // Setup event handlers
+          self._setupTorrentEvents(torrent);
+          
+          // Force announce to find peers
+          try {
+            torrent.announce();
+          } catch (announceErr) {
+            console.warn('Error announcing torrent:', announceErr);
+          }
+          
+          // Insert or update torrent record in collection
+          self._updateTorrentRecord(torrent);
+          
+          resolve(torrent);
+        });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  },
+  
+  /**
+   * Create a torrent from files
+   * @param {String|Array} filesOrPath - Path to file/folder or array of file objects
+   * @param {Object} opts - Options for the torrent
+   * @return {Promise<Object>} The created torrent
+   */
+  createTorrent: function(filesOrPath, opts = {}) {
+    const self = this;
+    
+    return new Promise(function(resolve, reject) {
+      try {
+        const torrentClient = self.getClient();
+        
+        if (!torrentClient) {
+          return self.initialize().then(function(initializedClient) {
+            return self.createTorrent(filesOrPath, opts);
           }).then(resolve).catch(reject);
         }
         
@@ -154,15 +257,31 @@ export const WebTorrentServer = {
         const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
         const options = {
           path: storagePath,
-          ...opts
+          ...opts,
+          announceList: Settings.get('public.webtorrent.announceList', [
+            ['wss://tracker.openwebtorrent.com']
+          ])
         };
         
-        torrentClient.seed(files, options, function(torrent) {
+        console.log(`Creating torrent with path: ${storagePath}`);
+        console.log('Files or path:', typeof filesOrPath === 'string' ? filesOrPath : 'Array of files');
+        
+        torrentClient.seed(filesOrPath, options, function(torrent) {
+          console.log(`Created torrent ${torrent.name} (${torrent.infoHash}) successfully`);
+          console.log(`Magnet URI: ${torrent.magnetURI}`);
+          
           // Store reference to the torrent
           self._torrents.set(torrent.infoHash, torrent);
           
           // Setup event handlers
           self._setupTorrentEvents(torrent);
+          
+          // Force announce to find peers
+          try {
+            torrent.announce();
+          } catch (announceErr) {
+            console.warn('Error announcing torrent:', announceErr);
+          }
           
           // Insert new torrent record in collection
           self._updateTorrentRecord(torrent);
@@ -175,14 +294,41 @@ export const WebTorrentServer = {
     });
   },
   
+  /**
+   * Get file contents from a torrent
+   * @param {String} infoHash - Info hash of the torrent
+   * @param {String} filename - Name of the file to get
+   * @return {Promise<String>} File contents
+   */
   getFileContents: function(infoHash, filename) {
     const self = this;
     
-    return new Promise(function(resolve, reject) {
+    return new Promise(async function(resolve, reject) {
       const torrent = self._torrents.get(infoHash);
       
       if (!torrent) {
-        return reject(new Meteor.Error('not-found', 'Torrent not found'));
+        // Try to reload the torrent from database
+        try {
+          const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+          
+          if (!torrentRecord || !torrentRecord.magnetURI) {
+            return reject(new Meteor.Error('not-found', 'Torrent not found or has no magnet URI'));
+          }
+          
+          console.log(`Reloading torrent ${infoHash} for file contents request`);
+          const reloadedTorrent = await self.addTorrent(torrentRecord.magnetURI);
+          
+          // Wait a bit for the torrent to initialize
+          await new Promise(r => Meteor.setTimeout(r, 1000));
+          
+          // Retry getting the file
+          return self.getFileContents(infoHash, filename)
+            .then(resolve)
+            .catch(reject);
+        } catch (err) {
+          console.error('Error reloading torrent:', err);
+          return reject(new Meteor.Error('not-found', 'Torrent not found and could not be reloaded'));
+        }
       }
       
       // Find the file in the torrent
@@ -208,14 +354,40 @@ export const WebTorrentServer = {
     });
   },
   
+  /**
+   * Get all file contents from a torrent
+   * @param {String} infoHash - Info hash of the torrent
+   * @return {Promise<Object>} Object with filename keys and content values
+   */
   getAllFileContents: function(infoHash) {
     const self = this;
     
-    return new Promise(function(resolve, reject) {
+    return new Promise(async function(resolve, reject) {
       const torrent = self._torrents.get(infoHash);
       
       if (!torrent) {
-        return reject(new Meteor.Error('not-found', 'Torrent not found'));
+        // Try to reload the torrent from database
+        try {
+          const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+          
+          if (!torrentRecord || !torrentRecord.magnetURI) {
+            return reject(new Meteor.Error('not-found', 'Torrent not found or has no magnet URI'));
+          }
+          
+          console.log(`Reloading torrent ${infoHash} for file contents request`);
+          const reloadedTorrent = await self.addTorrent(torrentRecord.magnetURI);
+          
+          // Wait a bit for the torrent to initialize
+          await new Promise(r => Meteor.setTimeout(r, 1000));
+          
+          // Retry getting the files
+          return self.getAllFileContents(infoHash)
+            .then(resolve)
+            .catch(reject);
+        } catch (err) {
+          console.error('Error reloading torrent:', err);
+          return reject(new Meteor.Error('not-found', 'Torrent not found and could not be reloaded'));
+        }
       }
       
       const filePromises = torrent.files.map(function(file) {
@@ -247,39 +419,74 @@ export const WebTorrentServer = {
     });
   },
   
+  /**
+   * Remove a torrent
+   * @param {String} infoHash - Info hash of the torrent
+   * @param {Boolean} removeFiles - Whether to remove downloaded files
+   * @return {Promise<Boolean>} Success
+   */
   removeTorrent: function(infoHash, removeFiles = false) {
     const self = this;
     
-    return new Promise(function(resolve, reject) {
-      const torrent = self._torrents.get(infoHash);
-      
-      if (!torrent) {
-        TorrentsCollection.remove({ infoHash });
-        return resolve(true); // Torrent not found, but remove from collection anyway
-      }
-      
-      torrent.destroy({ destroyStore: removeFiles }, function(err) {
-        if (err) {
-          return reject(err);
+    return new Promise(async function(resolve, reject) {
+      try {
+        const torrent = self._torrents.get(infoHash);
+        
+        if (!torrent) {
+          // If torrent is in DB but not in client, just remove from DB
+          await TorrentsCollection.removeAsync({ infoHash });
+          console.log(`Removed torrent ${infoHash} from database (was not in client)`);
+          return resolve(true);
         }
         
-        self._torrents.delete(infoHash);
-        
-        // Remove from collection
-        TorrentsCollection.remove({ infoHash });
-        resolve(true);
-      });
+        // Remove the torrent from client
+        torrent.destroy({ destroyStore: removeFiles }, async function(err) {
+          if (err) {
+            console.error(`Error destroying torrent ${infoHash}:`, err);
+            return reject(err);
+          }
+          
+          // Remove from our internal map
+          self._torrents.delete(infoHash);
+          
+          // Remove from collection
+          try {
+            await TorrentsCollection.removeAsync({ infoHash });
+            console.log(`Removed torrent ${infoHash} from database`);
+            resolve(true);
+          } catch (dbErr) {
+            console.error(`Error removing torrent ${infoHash} from database:`, dbErr);
+            reject(dbErr);
+          }
+        });
+      } catch (err) {
+        reject(err);
+      }
     });
   },
   
+  /**
+   * Get a torrent by info hash
+   * @param {String} infoHash - Info hash of the torrent
+   * @return {Object} The torrent object or null if not found
+   */
   getTorrent: function(infoHash) {
     return this._torrents.get(infoHash);
   },
   
+  /**
+   * Get all torrents
+   * @return {Array} Array of all torrent objects
+   */
   getAllTorrents: function() {
     return Array.from(this._torrents.values());
   },
   
+  /**
+   * Set up event handlers for a torrent
+   * @private
+   * @param {Object} torrent - The torrent object
+   */
   _setupTorrentEvents: function(torrent) {
     if (!torrent) {
       console.error('Cannot setup events for null torrent');
@@ -302,17 +509,21 @@ export const WebTorrentServer = {
       
       // Handle download completion
       torrent.on('done', function() {
+        console.log(`Torrent ${torrent.name} (${torrent.infoHash}) download complete, now seeding`);
         self._updateTorrentRecord(torrent);
       });
       
       // Handle errors
       torrent.on('error', function(err) {
-        console.error('Torrent error:', err);
+        console.error(`Torrent ${torrent.name} (${torrent.infoHash}) error:`, err);
       });
       
       // Handle wire connections (peers)
       if (torrent.on && torrent.wires) {
         torrent.on('wire', function(wire) {
+          if (wire && wire.remoteAddress) {
+            console.log(`New peer connected to ${torrent.name} (${torrent.infoHash}): ${wire.remoteAddress}`);
+          }
           self._updateTorrentRecord(torrent);
           
           if (wire && typeof wire.on === 'function') {
@@ -327,85 +538,101 @@ export const WebTorrentServer = {
     }
   },
   
+  /**
+   * Update or create a torrent record in the database
+   * @private
+   * @param {Object} torrent - The torrent object
+   */
   _updateTorrentRecord: async function(torrent) {
-    const files = torrent.files.map(function(file) {
-      return {
-        name: file.name,
-        path: file.path,
-        size: file.length,
-        type: file.type || 'application/octet-stream'
-      };
-    });
+    if (!torrent) {
+      console.error('Cannot update record for null torrent');
+      return;
+    }
     
-    const torrentData = {
-      infoHash: torrent.infoHash,
-      name: torrent.name,
-      magnetURI: torrent.magnetURI,
-      size: torrent.length,
-      files: files,
-      status: {
-        downloaded: torrent.downloaded,
-        uploaded: torrent.uploaded,
-        downloadSpeed: torrent.downloadSpeed,
-        uploadSpeed: torrent.uploadSpeed,
-        progress: torrent.progress,
-        peers: torrent.numPeers,
-        seeds: torrent.numPeers - get(torrent, '_peersLength', 0),
-        state: torrent.done ? 'seeding' : 
-               torrent.paused ? 'paused' : 'downloading'
-      }
-    };
-    
-    // Check if torrent exists in collection - use findOneAsync
-    const existing = await TorrentsCollection.findOneAsync({ infoHash: torrent.infoHash });
-    
-    if (existing) {
-      await TorrentsCollection.updateAsync(
-        { infoHash: torrent.infoHash },
-        { $set: torrentData }
-      );
-    } else {
-      // Add creation date and other initial data
-      torrentData.created = new Date();
-      torrentData.description = '';
-      torrentData.fhirType = 'unknown';
-      torrentData.meta = {
-        fhirVersion: '',
-        resourceCount: 0,
-        profile: ''
+    try {
+      const files = torrent.files.map(function(file) {
+        return {
+          name: file.name,
+          path: file.path || file.name,
+          size: file.length,
+          type: file.type || 'application/octet-stream'
+        };
+      });
+      
+      const torrentData = {
+        infoHash: torrent.infoHash,
+        name: torrent.name || 'Unnamed Torrent',
+        magnetURI: torrent.magnetURI,
+        size: torrent.length || 0,
+        files: files,
+        status: {
+          downloaded: torrent.downloaded || 0,
+          uploaded: torrent.uploaded || 0,
+          downloadSpeed: torrent.downloadSpeed || 0,
+          uploadSpeed: torrent.uploadSpeed || 0,
+          progress: torrent.progress || 0,
+          peers: torrent.numPeers || 0,
+          seeds: (torrent.numPeers || 0) - get(torrent, '_peersLength', 0),
+          state: torrent.done ? 'seeding' : 
+                 torrent.paused ? 'paused' : 'downloading'
+        }
       };
       
-      await TorrentsCollection.insertAsync(torrentData);
+      // Check if torrent exists in collection - use findOneAsync
+      let existing = null;
+      try {
+        existing = await TorrentsCollection.findOneAsync({ infoHash: torrent.infoHash });
+      } catch (findErr) {
+        console.error(`Error finding torrent ${torrent.infoHash} in database:`, findErr);
+      }
+      
+      if (existing) {
+        // Update existing torrent
+        try {
+          await TorrentsCollection.updateAsync(
+            { infoHash: torrent.infoHash },
+            { $set: torrentData }
+          );
+        } catch (updateErr) {
+          console.error(`Error updating torrent ${torrent.infoHash} in database:`, updateErr);
+        }
+      } else {
+        // Insert new torrent
+        try {
+          // Add creation date and other initial data
+          torrentData.created = new Date();
+          torrentData.description = torrent.comment || '';
+          torrentData.fhirType = 'unknown'; // Will be updated later if needed
+          torrentData.meta = {
+            fhirVersion: '',
+            resourceCount: 0,
+            profile: ''
+          };
+          
+          await TorrentsCollection.insertAsync(torrentData);
+          console.log(`Inserted new torrent ${torrent.name} (${torrent.infoHash}) into database`);
+        } catch (insertErr) {
+          console.error(`Error inserting torrent ${torrent.infoHash} into database:`, insertErr);
+        }
+      }
+    } catch (err) {
+      console.error(`Error updating torrent ${torrent ? torrent.infoHash : 'unknown'} record:`, err);
     }
   }
 };
 
 // Initialize client on server startup
 Meteor.startup(function() {
-  console.log('Initializing WebTorrent server...');
+  console.log('Initializing WebTorrent server on Meteor startup...');
   // Use Meteor.setTimeout to ensure the server is fully initialized before attempting
   // to initialize WebTorrent
   Meteor.setTimeout(function() {
     WebTorrentServer.initialize()
       .then(function() {
-        console.log('WebTorrent server initialized successfully!');
+        console.log('WebTorrent server initialized successfully from startup!');
       })
       .catch(function(err) {
-        console.error('Failed to initialize WebTorrent server:', err);
+        console.error('Failed to initialize WebTorrent server from startup:', err);
       });
   }, 1000);
 });
-
-if(client){
-  client.on('torrent', function(torrent) {
-    console.log('New torrent added:', torrent.name, torrent.infoHash);
-    
-    torrent.on('wire', function(wire, addr) {
-      console.log('Connected to peer:', addr, 'for torrent:', torrent.name);
-    });
-    
-    torrent.on('noPeers', function(announceType) {
-      console.log('No peers found for', torrent.name, 'announce type:', announceType);
-    });
-  });
-}

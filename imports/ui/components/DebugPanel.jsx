@@ -14,7 +14,7 @@ import { Settings } from '../../api/settings/settings';
 // Debug component to display application state and troubleshoot issues
 function DebugPanel() {
   const [loading, setLoading] = useState(false);
-  
+
   const [isOpen, setIsOpen] = useState(false);
   const [runtimeInfo, setRuntimeInfo] = useState({
     meteorStatus: 'Checking...',
@@ -94,7 +94,6 @@ function DebugPanel() {
       setExpanded(isExpanded ? panel : false);
     };
   }
-  
   // Test connection to server
   function testConnection() {
     Meteor.call('debug.testPeers', function(err, result) {
@@ -173,7 +172,7 @@ function DebugPanel() {
             position: 'fixed', 
             bottom: 60, 
             right: 10, 
-            width: 400, 
+            width: 800, 
             maxHeight: '80vh',
             overflow: 'auto',
             zIndex: 1000,
@@ -198,7 +197,7 @@ function DebugPanel() {
               variant="contained" 
               color="secondary" 
               onClick={checkServerStatus}
-              disabled={loading}
+              sx={{ mr: 1 }}
             >
               Full Server Status
             </Button>
@@ -207,6 +206,7 @@ function DebugPanel() {
               color="warning" 
               onClick={repairTorrents}
               disabled={loading}
+              sx={{ mr: 1 }}
             >
               Repair Torrents
             </Button>

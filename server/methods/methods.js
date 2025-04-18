@@ -220,7 +220,9 @@ Meteor.methods({
       subscription: {
         ready: true, // We can't easily check this server-side
         count: subCount
-      }
+      },
+      torrentsCount: torrents.length,
+      currentTime: new Date().toISOString()
     };
   },
   'debug.repairTorrents': async function() {
@@ -278,6 +280,30 @@ Meteor.methods({
       status: 'completed',
       added: addResults,
       saved: saveResults
+    };
+  },
+  'debug.checkTorrentConnection': function(infoHash) {
+    check(infoHash, String);
+    
+    const torrent = WebTorrentServer.getTorrent(infoHash);
+    if (!torrent) {
+      return { status: 'error', message: 'Torrent not found in client' };
+    }
+    
+    // Force announce to trackers
+    torrent.announce();
+    
+    return {
+      status: 'success',
+      infoHash: torrent.infoHash,
+      name: torrent.name,
+      peers: torrent.numPeers,
+      trackers: torrent._trackers ? Object.keys(torrent._trackers) : [],
+      wires: (torrent.wires || []).map(wire => ({
+        peerId: wire.peerId ? wire.peerId.toString('hex') : 'unknown',
+        type: wire.type || 'unknown',
+        remoteAddress: wire.remoteAddress
+      }))
     };
   }
 });

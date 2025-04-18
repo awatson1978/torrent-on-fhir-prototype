@@ -11,6 +11,9 @@ import './methods/torrent-methods';
 import './methods/peer-methods';
 import './methods/methods';
 
+import './tracker-fix';
+
+
 Meteor.startup(async () => {
   console.log('Starting FHIR P2P server...');
   
@@ -127,4 +130,46 @@ Meteor.startup(async () => {
   }
   
   console.log('FHIR P2P server started successfully');
+
+  console.log('Setting up additional WebTorrent initialization');
+  Meteor.setTimeout(async function() {
+    try {
+      const client = WebTorrentServer.getClient();
+      if (!client) {
+        console.log('WebTorrent client not initialized yet, trying to initialize...');
+        await WebTorrentServer.initialize();
+      } else {
+        console.log('WebTorrent client already initialized, checking trackers...');
+        
+        // Check if trackers are active
+        const trackers = client._trackers ? Object.keys(client._trackers) : [];
+        console.log(`WebTorrent has ${trackers.length} active trackers`);
+        
+        if (trackers.length === 0) {
+          // Reinitialize trackers
+          const config = Settings.getWebTorrentConfig();
+          console.log('No active trackers, adding from config:', config.tracker);
+          
+          if (Array.isArray(config.tracker)) {
+            config.tracker.forEach(function(trackerUrl) {
+              try {
+                console.log(`Adding tracker: ${trackerUrl}`);
+                // client.tracker.add(trackerUrl);
+                if (client && typeof client.addTracker === 'function') {
+                  console.log(`Adding tracker: ${trackerUrl}`);
+                  client.addTracker(trackerUrl);
+                } else {
+                  console.log('Client does not have addTracker method, will need to add trackers when creating torrents');
+                }
+              } catch (e) {
+                console.error(`Error adding tracker ${trackerUrl}:`, e);
+              }
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error in additional WebTorrent initialization:', err);
+    }
+  }, 15000); // Run after 15 seconds
 });
