@@ -61,5 +61,17 @@ Meteor.methods({
         timestamp: new Date()
       };
     }
+  },
+  'debug.getNetworkStatus': function() {
+    const client = WebTorrentServer.getClient();
+    if (!client) return { status: 'Client not initialized' };
+    
+    return {
+      trackerStatus: client._trackers ? 'Active' : 'Inactive',
+      dhtStatus: client.dht ? 'Enabled' : 'Disabled',
+      publicIp: client._connectedPeers ? 'Connected' : 'Not connected',
+      trackers: client._trackers,
+      torrentCount: client.torrents.length
+    };
   }
 });

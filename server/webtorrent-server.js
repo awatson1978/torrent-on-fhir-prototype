@@ -49,25 +49,28 @@ export const WebTorrentServer = {
     // Create a promise for the initialization
     initializePromise = new Promise(function(resolve, reject) {
       try {
-        // Try again to require WebTorrent if it failed at the module level
-        if (!WebTorrent) {
+        // Try to load WebTorrent
+        let WebTorrent;
+        try {
+          WebTorrent = require('webtorrent');
+          console.log('WebTorrent loaded successfully');
+        } catch (err) {
+          console.error('Error requiring WebTorrent:', err);
+          // Try an alternative way to load WebTorrent
           try {
-            WebTorrent = require('webtorrent');
-          } catch (err1) {
-            console.error('Error requiring WebTorrent directly:', err1);
-            try {
-              WebTorrent = require('webtorrent/index');
-            } catch (err2) {
-              console.error('Error requiring WebTorrent from index:', err2);
-              try {
-                const npmPath = path.join(process.cwd(), 'node_modules', 'webtorrent');
-                WebTorrent = require(npmPath);
-              } catch (err3) {
-                console.error('Error requiring WebTorrent from npm path:', err3);
-                throw new Error('Could not load WebTorrent module');
-              }
-            }
+            const npmPath = require('path').join(process.cwd(), 'node_modules', 'webtorrent');
+            WebTorrent = require(npmPath);
+            console.log('WebTorrent loaded from npm path');
+          } catch (err2) {
+            console.error('Failed to load WebTorrent from npm path:', err2);
+            reject(new Error('Could not load WebTorrent module'));
+            return;
           }
+        }
+        
+        if (!WebTorrent) {
+          reject(new Error('WebTorrent module not available'));
+          return;
         }
         
         const config = Settings.getWebTorrentConfig();
@@ -81,19 +84,29 @@ export const WebTorrentServer = {
           console.log(`Created storage directory: ${storagePath}`);
         }
         
-        client = new WebTorrent({
-          tracker: config.tracker,
-          dht: config.dht,
-          webSeeds: config.webSeeds
-        });
-        
-        client.on('error', function(err) {
-          console.error('WebTorrent server error:', err);
-        });
-        
-        console.log('WebTorrent server initialized successfully!');
-        isInitializing = false;
-        resolve(client);
+        try {
+          client = new WebTorrent({
+            tracker: config.tracker,
+            dht: config.dht,
+            webSeeds: config.webSeeds
+          });
+          
+          if (!client) {
+            throw new Error('WebTorrent client creation returned null/undefined');
+          }
+          
+          client.on('error', function(err) {
+            console.error('WebTorrent server error:', err);
+          });
+          
+          console.log('WebTorrent server initialized successfully!');
+          isInitializing = false;
+          resolve(client);
+        } catch (err) {
+          console.error('Error creating WebTorrent client:', err);
+          isInitializing = false;
+          reject(err);
+        }
       } catch (err) {
         console.error('Error during WebTorrent initialization:', err);
         isInitializing = false;
@@ -114,7 +127,7 @@ export const WebTorrentServer = {
     
     return new Promise(function(resolve, reject) {
       try {
-        
+
         const torrentClient = self.getClient();
         
         // ...rest of method...
@@ -268,36 +281,50 @@ export const WebTorrentServer = {
   },
   
   _setupTorrentEvents: function(torrent) {
+    if (!torrent) {
+      console.error('Cannot setup events for null torrent');
+      return;
+    }
+    
     const self = this;
     
     // Update status periodically
     const updateInterval = Meteor.setInterval(function() {
-      self._updateTorrentRecord(torrent);
+      if (torrent) self._updateTorrentRecord(torrent);
     }, 1000);
     
-    // Clear interval when torrent is removed
-    torrent.on('close', function() {
-      Meteor.clearInterval(updateInterval);
-    });
-    
-    // Handle download completion
-    torrent.on('done', function() {
-      self._updateTorrentRecord(torrent);
-    });
-    
-    // Handle errors
-    torrent.on('error', function(err) {
-      console.error('Torrent error:', err);
-    });
-    
-    // Handle wire connections (peers)
-    torrent.on('wire', function(wire) {
-      self._updateTorrentRecord(torrent);
+    // Make sure torrent has all the event handlers we're trying to use
+    if (torrent && typeof torrent.on === 'function') {
+      // Clear interval when torrent is removed
+      torrent.on('close', function() {
+        Meteor.clearInterval(updateInterval);
+      });
       
-      wire.on('close', function() {
+      // Handle download completion
+      torrent.on('done', function() {
         self._updateTorrentRecord(torrent);
       });
-    });
+      
+      // Handle errors
+      torrent.on('error', function(err) {
+        console.error('Torrent error:', err);
+      });
+      
+      // Handle wire connections (peers)
+      if (torrent.on && torrent.wires) {
+        torrent.on('wire', function(wire) {
+          self._updateTorrentRecord(torrent);
+          
+          if (wire && typeof wire.on === 'function') {
+            wire.on('close', function() {
+              self._updateTorrentRecord(torrent);
+            });
+          }
+        });
+      }
+    } else {
+      console.error('Torrent does not have .on method:', torrent);
+    }
   },
   
   _updateTorrentRecord: async function(torrent) {
@@ -368,3 +395,17 @@ Meteor.startup(function() {
       });
   }, 1000);
 });
+
+if(client){
+  client.on('torrent', function(torrent) {
+    console.log('New torrent added:', torrent.name, torrent.infoHash);
+    
+    torrent.on('wire', function(wire, addr) {
+      console.log('Connected to peer:', addr, 'for torrent:', torrent.name);
+    });
+    
+    torrent.on('noPeers', function(announceType) {
+      console.log('No peers found for', torrent.name, 'announce type:', announceType);
+    });
+  });
+}

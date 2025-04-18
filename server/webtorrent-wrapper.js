@@ -8,8 +8,17 @@ let WebTorrent;
 
 try {
   WebTorrent = require('webtorrent');
+  console.log('WebTorrent loaded successfully in wrapper');
 } catch (e) {
-  console.error('Failed to load WebTorrent:', e);
+  console.error('Failed to load WebTorrent in wrapper:', e);
+  try {
+    const path = require('path');
+    const npmPath = path.join(process.cwd(), 'node_modules', 'webtorrent');
+    WebTorrent = require(npmPath);
+    console.log('WebTorrent loaded from npm path in wrapper');
+  } catch (e2) {
+    console.error('Failed to load WebTorrent from npm path in wrapper:', e2);
+  }
 }
 
 // Export the required WebTorrent constructor
