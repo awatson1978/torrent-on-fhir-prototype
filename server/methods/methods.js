@@ -88,6 +88,7 @@ Meteor.methods({
         progress: Math.round(t.progress * 100)
       })),
       trackers: client._trackers ? Object.keys(client._trackers).length : 0
+    }
   },
   'debug.getNetworkStatus': function() {
     const client = WebTorrentServer.getClient();
