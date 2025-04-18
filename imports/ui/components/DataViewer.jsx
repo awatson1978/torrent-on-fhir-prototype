@@ -54,15 +54,25 @@ function DataViewer({ selectedTorrent }) {
       
       if (err) {
         console.error("Error fetching file contents:", err);
-        // More specific error message
-        if (err.error === 'not-found') {
-          setError(`This torrent exists in the database but its data is not available on this server. Try adding it using the magnet link.`);
-        } else {
-          setError(`Error loading files: ${err.message || err.reason || 'Unknown error'}`);
-        }
+        // More detailed error message
+        const errorDetails = err.details ? `\nDetails: ${err.details}` : '';
+        const errorCode = err.error ? `\nCode: ${err.error}` : '';
+        setError(`Error loading files: ${err.message || err.reason || 'Unknown error'}${errorCode}${errorDetails}`);
+        
+        // Try to get server status in case of error
+        Meteor.call('debug.getServerStatus', function(statusErr, statusResult) {
+          if (!statusErr && statusResult) {
+            console.log('Server status:', statusResult);
+          }
+        });
       } else {
-        console.log(`Received file contents:`, Object.keys(result || {}));
-        setFileContents(result || {});
+        if (result && Object.keys(result).length > 0) {
+          console.log(`Received ${Object.keys(result).length} files from server`);
+          setFileContents(result);
+        } else {
+          console.log(`Received empty result for torrent ${selectedTorrent.infoHash}`);
+          setError('No files found or files are still downloading');
+        }
       }
     });
   }, [selectedTorrent]);

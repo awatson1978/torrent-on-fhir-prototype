@@ -117,6 +117,140 @@ function DebugPanel() {
       }
     });
   }
+  function testTrackerConnectivity(){
+    Meteor.call('debug.checkTorrentConnection', selectedTorrentHash, function(err, result) {
+      if (err) {
+        console.error('Error checking tracker connectivity:', err);
+        alert('Error checking tracker connectivity: ' + err.message);
+      } else {
+        console.log('Tracker connectivity:', result);
+        alert('Tracker connectivity: ' + result);
+      }
+    });
+  }
+  function testTorrentFiles(){
+    // First get a list of torrents
+    Meteor.call('debug.getTorrentInfo', function(err, result) {
+      if (err) {
+        console.error('Error getting torrent info:', err);
+        alert('Error checking torrents: ' + err.message);
+        return;
+      }
+      
+      const clientTorrents = result.clientTorrents || [];
+      if (clientTorrents.length === 0) {
+        alert('No torrents found in client. Add a torrent first.');
+        return;
+      }
+      
+      // Use the first torrent's infoHash from the result
+      const firstTorrentHash = clientTorrents[0].infoHash;
+      console.log('Testing torrent files for:', firstTorrentHash);
+      
+      // Now get full status for this torrent
+      Meteor.call('debug.fullTorrentStatus', firstTorrentHash, function(statusErr, statusResult) {
+        if (statusErr) {
+          console.error('Error getting torrent status:', statusErr);
+          alert('Error testing torrent: ' + statusErr.message);
+        } else {
+          console.log('Full torrent status:', statusResult);
+          
+          // Show detailed results
+          let message = `Torrent Status for ${statusResult.database.name || firstTorrentHash}\n\n`;
+          message += `Database Record: ${statusResult.database.exists ? 'Found' : 'Missing'}\n`;
+          message += `Client Instance: ${statusResult.client.exists ? 'Found' : 'Missing'}\n`;
+          message += `Progress: ${statusResult.client.progress ? (statusResult.client.progress * 100).toFixed(2) + '%' : 'Unknown'}\n`;
+          message += `Peers: ${statusResult.client.numPeers || 0}\n`;
+          message += `Storage Path: ${statusResult.storage.path}\n`;
+          message += `Storage Exists: ${statusResult.storage.exists ? 'Yes' : 'No'}\n`;
+          message += `Storage Writable: ${statusResult.storage.writable ? 'Yes' : 'No'}\n`;
+          message += `Files Found On Disk: ${statusResult.files.exist ? 'Yes' : 'No'}\n\n`;
+          
+          if (statusResult.files.info.length > 0) {
+            message += 'Files:\n';
+            statusResult.files.info.forEach(file => {
+              message += `- ${file.name}: ${file.exists ? 'Exists' : 'Missing'} (${file.size} bytes)\n`;
+            });
+          } else {
+            message += 'No files found in torrent';
+          }
+          
+          alert(message);
+          
+          // If no files were found, try to actively load the torrent and check again
+          if (!statusResult.files.exist) {
+            if (confirm('No files found for this torrent. Would you like to try force-loading it?')) {
+              Meteor.call('debug.repairTorrents', function(repairErr, repairResult) {
+                if (repairErr) {
+                  alert('Error repairing: ' + repairErr.message);
+                } else {
+                  alert('Repair attempted. Check console for details.');
+                  console.log('Repair result:', repairResult);
+                }
+              });
+            }
+          }
+        }
+      });
+    });
+  }
+  function testFileRetrieval() {
+    // First get a list of torrents
+    Meteor.call('debug.getTorrentInfo', function(err, result) {
+      if (err) {
+        console.error('Error getting torrent info:', err);
+        alert('Error checking torrents: ' + err.message);
+        return;
+      }
+      
+      const clientTorrents = result.clientTorrents || [];
+      if (clientTorrents.length === 0) {
+        alert('No torrents found in client. Add a torrent first.');
+        return;
+      }
+      
+      // Use the first torrent's infoHash from the result
+      const firstTorrentHash = clientTorrents[0].infoHash;
+      console.log('Testing file retrieval for torrent:', firstTorrentHash);
+      
+      // Test file retrieval
+      Meteor.call('debug.testFileRetrieval', firstTorrentHash, function(testErr, testResult) {
+        if (testErr) {
+          console.error('Error testing file retrieval:', testErr);
+          alert('Error testing file retrieval: ' + testErr.message);
+        } else {
+          console.log('File retrieval test result:', testResult);
+          alert(`File retrieval test successful!\n\n` +
+                `File: ${testResult.fileName}\n` +
+                `Content length: ${testResult.contentLength}\n` +
+                `Preview: ${testResult.contentPreview}`);
+        }
+      });
+    });
+  }
+  function createSampleTorrent(){
+    Meteor.call('debug.createSampleTorrent', function(err, result) {
+      if (err) {
+        console.error('Error creating sample torrent:', err);
+        alert('Error creating sample torrent: ' + err.message);
+      } else {
+        console.log('Sample torrent created:', result);
+        alert('Sample torrent created!\nInfo hash: ' + result.infoHash);
+      }
+    });
+  }
+  function checkTorrentsInDatabase(){
+    Meteor.call('debug.getTorrentInfo', function(err, result) {
+      if (err) {
+        console.error('Error checking torrents:', err);
+        alert('Error checking torrents: ' + err.message);
+      } else {
+        console.log('Database torrents:', result.dbTorrents);
+        console.log('Client torrents:', result.clientTorrents);
+        alert('Database torrents: ' + JSON.stringify(result.clientTorrents, null, 2) + '\n\nClient torrents:' + JSON.stringify(result.clientTorrents, null, 2));
+      }
+    });
+  }
   function checkServerStatus() {
     setLoading(true);
     Meteor.call('debug.getServerStatus', function(err, result) {
@@ -172,7 +306,7 @@ function DebugPanel() {
             position: 'fixed', 
             bottom: 60, 
             right: 10, 
-            width: 800, 
+            width: 1300, 
             maxHeight: '80vh',
             overflow: 'auto',
             zIndex: 1000,
@@ -186,7 +320,7 @@ function DebugPanel() {
               Test Server
             </Button>
             <Button 
-              variant="outlined" 
+              variant="contained" 
               color="primary" 
               onClick={testConnection}
               sx={{ mr: 1 }}
@@ -195,21 +329,69 @@ function DebugPanel() {
             </Button>
             <Button 
               variant="contained" 
-              color="secondary" 
+              color="primary" 
               onClick={checkServerStatus}
               sx={{ mr: 1 }}
             >
-              Full Server Status
+              Server Stats
             </Button>
             <Button 
               variant="contained" 
-              color="warning" 
+              color="primary" 
               onClick={repairTorrents}
               disabled={loading}
               sx={{ mr: 1 }}
             >
-              Repair Torrents
+              Repair
             </Button>
+            <Button 
+              variant="contained" 
+              color="primary" 
+              onClick={testTrackerConnectivity}
+              disabled={loading}
+              sx={{ mr: 1 }}
+            >
+              Trackers
+            </Button>
+            <Button 
+              variant="contained" 
+              color="primary" 
+              onClick={checkTorrentsInDatabase}
+              disabled={loading}
+              sx={{ mr: 1 }}
+            >
+              DB Torrents
+            </Button>
+            <Button 
+              variant="contained" 
+              color="primary" 
+              onClick={testTorrentFiles}
+              disabled={loading}
+              sx={{ mr: 1 }}
+            >
+              Test Torrents
+            </Button> 
+            <Button 
+              variant="contained" 
+              color="primary" 
+              onClick={createSampleTorrent}
+              disabled={loading}
+              sx={{ mr: 1 }}
+            >
+              Create Sample
+            </Button> 
+            <Button 
+              variant="contained" 
+              color="primary" 
+              onClick={testFileRetrieval}
+              disabled={loading}
+              sx={{ mr: 1 }}
+            >
+              Test Retrieval
+            </Button>  
+
+
+            
           </Box>
           
           <Box sx={{ mt: 2 }}>

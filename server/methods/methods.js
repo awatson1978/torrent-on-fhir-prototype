@@ -305,5 +305,256 @@ Meteor.methods({
         remoteAddress: wire.remoteAddress
       }))
     };
+  },
+  'debug.fullTorrentStatus': function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`Full torrent status check for ${infoHash}`);
+    
+    // Get the torrent record from the database
+    const torrentRecord = TorrentsCollection.findOne({ infoHash });
+    
+    // Get the actual torrent object from WebTorrentServer
+    const torrent = WebTorrentServer.getTorrent(infoHash);
+    
+    // Storage path check
+    const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+    let storageExists = false;
+    let storageWritable = false;
+    
+    try {
+      storageExists = fs.existsSync(storagePath);
+      if (storageExists) {
+        // Test write access
+        const testPath = path.join(storagePath, 'test-write-' + Date.now());
+        fs.writeFileSync(testPath, 'test');
+        fs.unlinkSync(testPath);
+        storageWritable = true;
+      }
+    } catch (err) {
+      console.error('Storage path error:', err);
+    }
+    
+    // Check if any files exist for this torrent
+    let filesExist = false;
+    let filesInfo = [];
+    
+    if (torrent && torrent.files && torrent.files.length > 0) {
+      filesInfo = torrent.files.map(file => {
+        let fileExists = false;
+        let filePath = '';
+        
+        try {
+          filePath = path.join(storagePath, file.path);
+          fileExists = fs.existsSync(filePath);
+        } catch (err) {
+          console.error(`Error checking file ${file.name}:`, err);
+        }
+        
+        return {
+          name: file.name,
+          size: file.length,
+          exists: fileExists,
+          path: filePath
+        };
+      });
+      
+      filesExist = filesInfo.some(f => f.exists);
+    }
+    
+    return {
+      timestamp: new Date(),
+      database: {
+        exists: !!torrentRecord,
+        name: torrentRecord ? torrentRecord.name : null,
+        magnetURI: torrentRecord ? torrentRecord.magnetURI : null,
+        status: torrentRecord ? torrentRecord.status : null
+      },
+      client: {
+        exists: !!torrent,
+        name: torrent ? torrent.name : null,
+        progress: torrent ? torrent.progress : null,
+        numPeers: torrent ? torrent.numPeers : 0,
+        ready: torrent ? torrent.ready : false,
+        files: torrent ? torrent.files.length : 0
+      },
+      storage: {
+        path: storagePath,
+        exists: storageExists,
+        writable: storageWritable
+      },
+      files: {
+        exist: filesExist,
+        info: filesInfo
+      }
+    };
+  },
+  'debug.createSampleTorrent': async function() {
+    console.log('Creating sample torrent from bundled data');
+    
+    try {
+      // Read the sample file from private directory
+      const Assets = Package.assets.Assets;
+      const sampleBundle = Assets.getText('sample-bundle.json');
+      
+      if (!sampleBundle) {
+        throw new Meteor.Error('sample-missing', 'Sample bundle file not found');
+      }
+      
+      // Create temporary directory and file
+      const tempPath = path.join(Settings.get('private.storage.tempPath', '/tmp/fhir-torrents'), `sample-${Date.now()}`);
+      fs.mkdirSync(tempPath, { recursive: true });
+      
+      const filePath = path.join(tempPath, 'sample-bundle.json');
+      fs.writeFileSync(filePath, sampleBundle);
+      
+      console.log(`Sample file written to ${filePath}`);
+      
+      // Create torrent
+      const result = await WebTorrentServer.createTorrent(tempPath, {
+        name: 'Sample FHIR Bundle',
+        comment: 'Automatically created sample torrent for testing'
+      });
+      
+      // Update metadata
+      await TorrentsCollection.updateAsync(
+        { infoHash: result.infoHash },
+        { $set: { 
+          description: 'Sample FHIR bundle for testing',
+          fhirType: 'bundle'
+        }}
+      );
+      
+      // Clean up temp files after a delay
+      Meteor.setTimeout(function() {
+        try {
+          fs.unlinkSync(filePath);
+          fs.rmdirSync(tempPath);
+        } catch (e) {
+          console.error('Error cleaning up temp files:', e);
+        }
+      }, 5000);
+      
+      return {
+        infoHash: result.infoHash,
+        name: result.name,
+        magnetURI: result.magnetURI
+      };
+    } catch (error) {
+      console.error('Error creating sample torrent:', error);
+      throw new Meteor.Error('create-failed', error.message || 'Failed to create sample torrent');
+    }
+  },
+  'debug.testFileRetrieval': async function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`Testing file retrieval for torrent ${infoHash}`);
+    
+    try {
+      // Get the torrent from WebTorrentServer
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        console.log(`Torrent ${infoHash} not found in client, attempting to reload`);
+        const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+        
+        if (!torrentRecord || !torrentRecord.magnetURI) {
+          throw new Meteor.Error('not-found', 'Torrent not found or has no magnet URI');
+        }
+        
+        await WebTorrentServer.addTorrent(torrentRecord.magnetURI);
+        
+        // Wait for torrent to initialize
+        await new Promise(r => Meteor.setTimeout(r, 2000));
+        
+        // Try to get the torrent again
+        const reloadedTorrent = WebTorrentServer.getTorrent(infoHash);
+        
+        if (!reloadedTorrent) {
+          throw new Meteor.Error('reload-failed', 'Failed to reload torrent');
+        }
+        
+        console.log(`Torrent reloaded, it has ${reloadedTorrent.files.length} files`);
+        
+        // Test getting the first file directly
+        if (reloadedTorrent.files.length > 0) {
+          const file = reloadedTorrent.files[0];
+          console.log(`Testing direct file retrieval for ${file.name}`);
+          
+          return new Promise((resolve, reject) => {
+            file.getBuffer((err, buffer) => {
+              if (err) {
+                console.error(`Error getting buffer for ${file.name}:`, err);
+                reject(new Meteor.Error('buffer-error', `Error getting file buffer: ${err.message}`));
+              } else {
+                try {
+                  const content = buffer.toString('utf8');
+                  console.log(`Successfully got content for ${file.name}, length: ${content.length}`);
+                  resolve({
+                    success: true,
+                    fileName: file.name,
+                    contentLength: content.length,
+                    contentPreview: content.substring(0, 100) + '...',
+                    torrentInfo: {
+                      name: reloadedTorrent.name,
+                      infoHash: reloadedTorrent.infoHash,
+                      progress: reloadedTorrent.progress,
+                      numPeers: reloadedTorrent.numPeers
+                    }
+                  });
+                } catch (e) {
+                  console.error(`Error processing buffer for ${file.name}:`, e);
+                  reject(new Meteor.Error('processing-error', `Error processing file buffer: ${e.message}`));
+                }
+              }
+            });
+          });
+        } else {
+          throw new Meteor.Error('no-files', 'Torrent has no files');
+        }
+      } else {
+        console.log(`Found torrent ${infoHash} with ${torrent.files.length} files`);
+        
+        // Test getting the first file directly
+        if (torrent.files.length > 0) {
+          const file = torrent.files[0];
+          console.log(`Testing direct file retrieval for ${file.name}`);
+          
+          return new Promise((resolve, reject) => {
+            file.getBuffer((err, buffer) => {
+              if (err) {
+                console.error(`Error getting buffer for ${file.name}:`, err);
+                reject(new Meteor.Error('buffer-error', `Error getting file buffer: ${err.message}`));
+              } else {
+                try {
+                  const content = buffer.toString('utf8');
+                  console.log(`Successfully got content for ${file.name}, length: ${content.length}`);
+                  resolve({
+                    success: true,
+                    fileName: file.name,
+                    contentLength: content.length,
+                    contentPreview: content.substring(0, 100) + '...',
+                    torrentInfo: {
+                      name: torrent.name,
+                      infoHash: torrent.infoHash,
+                      progress: torrent.progress,
+                      numPeers: torrent.numPeers
+                    }
+                  });
+                } catch (e) {
+                  console.error(`Error processing buffer for ${file.name}:`, e);
+                  reject(new Meteor.Error('processing-error', `Error processing file buffer: ${e.message}`));
+                }
+              }
+            });
+          });
+        } else {
+          throw new Meteor.Error('no-files', 'Torrent has no files');
+        }
+      }
+    } catch (error) {
+      console.error('Error testing file retrieval:', error);
+      throw new Meteor.Error('retrieval-failed', error.message || 'Failed to test file retrieval');
+    }
   }
 });

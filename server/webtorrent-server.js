@@ -463,23 +463,28 @@ export const WebTorrentServer = {
    * @param {String} infoHash - Info hash of the torrent
    * @return {Promise<Object>} Object with filename keys and content values
    */
+  // In server/webtorrent-server.js
   getAllFileContents: function(infoHash) {
     const self = this;
     
     return new Promise(async function(resolve, reject) {
+      console.log(`WebTorrentServer.getAllFileContents for ${infoHash}`);
       const torrent = self._torrents.get(infoHash);
       
       if (!torrent) {
+        console.log(`Torrent ${infoHash} not found in _torrents map`);
         // Try to reload the torrent from database
         try {
           const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
           
           if (!torrentRecord || !torrentRecord.magnetURI) {
+            console.log(`No valid torrent record found in database for ${infoHash}`);
             return reject(new Meteor.Error('not-found', 'Torrent not found or has no magnet URI'));
           }
           
-          console.log(`Reloading torrent ${infoHash} for file contents request`);
+          console.log(`Reloading torrent ${infoHash} from magnet URI`);
           const reloadedTorrent = await self.addTorrent(torrentRecord.magnetURI);
+          console.log(`Reloaded torrent with info hash ${reloadedTorrent.infoHash}`);
           
           // Wait a bit for the torrent to initialize
           await new Promise(r => Meteor.setTimeout(r, 1000));
@@ -494,17 +499,23 @@ export const WebTorrentServer = {
         }
       }
       
+      console.log(`Found torrent ${infoHash} with ${torrent.files.length} files`);
+      
       const filePromises = torrent.files.map(function(file) {
         return new Promise(function(resolveFile, rejectFile) {
+          console.log(`Getting buffer for file: ${file.name}`);
           file.getBuffer(function(err, buffer) {
             if (err) {
+              console.error(`Error getting buffer for ${file.name}:`, err);
               return rejectFile(err);
             }
             
             try {
               const content = buffer.toString('utf8');
+              console.log(`Successfully got content for ${file.name}, length: ${content.length}`);
               resolveFile({ name: file.name, content });
             } catch (e) {
+              console.error(`Error converting buffer for ${file.name}:`, e);
               rejectFile(e);
             }
           });
@@ -517,9 +528,13 @@ export const WebTorrentServer = {
           filesWithContent.forEach(function(file) {
             contents[file.name] = file.content;
           });
+          console.log(`Returning content for ${Object.keys(contents).length} files`);
           resolve(contents);
         })
-        .catch(reject);
+        .catch(function(err) {
+          console.error('Error processing file promises:', err);
+          reject(err);
+        });
     });
   },
   
