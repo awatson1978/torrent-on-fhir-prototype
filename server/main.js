@@ -87,7 +87,7 @@ Meteor.startup(async () => {
   // After loading settings but before initializing WebTorrent
   const port = process.env.PORT || 3000;
   const tempPathTemplate = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
-  const tempPath = tempPathTemplate.replace('${PORT}', port);
+  const tempPath = tempPathTemplate.replace(/\${PORT}/g, port);
 
   console.log(`Storage directory for port ${port}: ${tempPath}`);
 

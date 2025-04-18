@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { Settings } from '/imports/api/settings/settings';
 import { TorrentsCollection } from '/imports/api/torrents/torrents';
+import parseTorrent from './parse-torrent-wrapper';
+import { TorrentParser } from './utils/torrent-parser';
 
 // Server-side WebTorrent client
 let client = null;
@@ -60,6 +62,9 @@ function safeAnnounce(torrent) {
     console.warn(`Error trying to announce torrent ${torrent ? torrent.infoHash : 'unknown'}:`, err.message);
   }
 }
+
+
+
 
 /**
  * WebTorrent server service
@@ -147,6 +152,17 @@ export const WebTorrentServer = {
           // Now that client is initialized, load all existing torrents from database
           this._loadTorrentsFromDatabase();
           
+          this._initializeTrackers();
+
+          if (client.dht && typeof client.dht.bootstrap === 'function') {
+            console.log('Bootstrapping DHT...');
+            try {
+              client.dht.bootstrap();
+            } catch (e) {
+              console.warn('Error bootstrapping DHT:', e);
+            }
+          }
+          
           isInitializing = false;
           resolve(client);
         } catch (err) {
@@ -162,6 +178,28 @@ export const WebTorrentServer = {
     }.bind(this));
     
     return initializePromise;
+  },
+
+  _initializeTrackers: function (client) {
+    if (!client) return;
+    
+    const config = Settings.getWebTorrentConfig();
+    if (Array.isArray(config.tracker)) {
+      // Add trackers directly to client
+      config.tracker.forEach(function(trackerUrl) {
+        try {
+          console.log(`Adding tracker: ${trackerUrl}`);
+          // Use client.tracker instead of client
+          if (client.tracker && typeof client.tracker.add === 'function') {
+            client.tracker.add(trackerUrl);
+          } else {
+            console.log('Client tracker does not have add method');
+          }
+        } catch (e) {
+          console.error(`Error adding tracker ${trackerUrl}:`, e);
+        }
+      });
+    }
   },
   
   /**
@@ -228,8 +266,8 @@ export const WebTorrentServer = {
         
         // Check if torrent already exists in client
         try {
-          const parseTorrent = require('parse-torrent');
-          const parsedTorrent = parseTorrent(torrentId);
+          // Use our custom parser instead of parse-torrent directly
+          const parsedTorrent = TorrentParser.parse(torrentId);
           const existingTorrent = self.getTorrent(parsedTorrent.infoHash);
           
           if (existingTorrent) {
@@ -237,7 +275,7 @@ export const WebTorrentServer = {
             return resolve(existingTorrent);
           }
         } catch (parseErr) {
-          // If parse-torrent fails, we'll just continue with the add operation
+          // If parsing fails, we'll just continue with the add operation
           console.warn('Could not parse torrentId:', parseErr.message);
         }
         
@@ -274,6 +312,29 @@ export const WebTorrentServer = {
         reject(err);
       }
     });
+  },
+  _safeAnnounce: function(torrent) {
+    if (!torrent) return;
+    
+    try {
+      // Check if the torrent has an announce method
+      if (typeof torrent.announce === 'function') {
+        torrent.announce();
+        console.log(`Announced torrent ${torrent.name || 'Unnamed'} (${torrent.infoHash}) to trackers`);
+      } else if (torrent._announce && typeof torrent._announce === 'function') {
+        // Some versions use _announce instead
+        torrent._announce();
+        console.log(`Used _announce for torrent ${torrent.name || 'Unnamed'} (${torrent.infoHash})`);
+      } else if (torrent.discovery && typeof torrent.discovery.announce === 'function') {
+        // Try through the discovery object if available
+        torrent.discovery.announce();
+        console.log(`Used discovery.announce for torrent ${torrent.name || 'Unnamed'} (${torrent.infoHash})`);
+      } else {
+        console.log(`No announce method available for torrent ${torrent.infoHash}`);
+      }
+    } catch (err) {
+      console.warn(`Error trying to announce torrent ${torrent ? torrent.infoHash : 'unknown'}:`, err.message);
+    }
   },
   
   /**

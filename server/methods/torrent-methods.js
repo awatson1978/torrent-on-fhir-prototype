@@ -21,8 +21,27 @@ Meteor.methods({
     console.log('Adding torrent from magnet URI:', magnetUri);
     
     try {
-      const result = await WebTorrentServer.addTorrent(magnetUri);
+      // Safer way to check for existing torrent without using parse-torrent
+      let existingTorrent = null;
+      
+      // Instead of trying to parse the magnetUri, try to extract the infoHash directly
+      const infoHashMatch = magnetUri.match(/xt=urn:btih:([a-zA-Z0-9]+)/);
+      if (infoHashMatch && infoHashMatch[1]) {
+        const infoHash = infoHashMatch[1].toLowerCase();
+        existingTorrent = WebTorrentServer.getTorrent(infoHash);
         
+        if (existingTorrent) {
+          console.log(`Torrent with infoHash ${infoHash} already exists in client, returning existing instance`);
+          return {
+            infoHash: existingTorrent.infoHash,
+            name: existingTorrent.name,
+            magnetURI: existingTorrent.magnetURI
+          };
+        }
+      }
+      
+      const result = await WebTorrentServer.addTorrent(magnetUri);
+      
       // Update metadata
       if (Object.keys(metadata).length > 0) {
         try {
@@ -209,10 +228,27 @@ Meteor.methods({
   'torrents.getAllFileContents': async function(infoHash) {
     check(infoHash, String);
     
+    console.log(`Received request for all file contents of torrent: ${infoHash}`);
+    
     try {
+      // Check if the torrent exists in the database first
+      const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+      
+      if (!torrentRecord) {
+        console.error(`Torrent ${infoHash} not found in database`);
+        throw new Meteor.Error('not-found', 'Torrent not found in database');
+      }
+      
+      console.log(`Found torrent in database, checking if it exists in WebTorrent client`);
+      
+      // Try to get the file contents
       const contents = await WebTorrentServer.getAllFileContents(infoHash);
+      
+      console.log(`Successfully retrieved contents for torrent ${infoHash}: ${Object.keys(contents).length} files`);
+      
       return contents;
     } catch (error) {
+      console.error(`Error getting file contents for torrent ${infoHash}:`, error);
       // Properly throw the error for the client
       throw new Meteor.Error(
         error.error || 'error', 

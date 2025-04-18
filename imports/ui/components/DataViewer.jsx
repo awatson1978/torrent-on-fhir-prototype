@@ -47,6 +47,8 @@ function DataViewer({ selectedTorrent }) {
     setLoading(true);
     setError('');
     
+    console.log(`Fetching file contents for torrent: ${selectedTorrent.infoHash}`);
+    
     Meteor.call('torrents.getAllFileContents', selectedTorrent.infoHash, function(err, result) {
       setLoading(false);
       
@@ -59,6 +61,7 @@ function DataViewer({ selectedTorrent }) {
           setError(`Error loading files: ${err.message || err.reason || 'Unknown error'}`);
         }
       } else {
+        console.log(`Received file contents:`, Object.keys(result || {}));
         setFileContents(result || {});
       }
     });
@@ -133,33 +136,54 @@ function DataViewer({ selectedTorrent }) {
             const content = fileContents[filename] || '';
             
             return (
-              <TabPanel key={filename} value={activeTab} index={index}>
-                <Box sx={{ mb: 2, display: 'flex', justifyContent: 'flex-end' }}>
-                  <Button
-                    startIcon={<CloudDownloadIcon />}
-                    onClick={() => downloadFile(filename, content)}
-                  >
-                    Download
-                  </Button>
-                </Box>
+              <Paper sx={{ width: '100%', mb: 2, p: 2 }}>
+                <Typography variant="h6" component="h2" gutterBottom>
+                  {selectedTorrent.name} Contents
+                </Typography>
                 
-                <TextField
-                  multiline
-                  fullWidth
-                  variant="outlined"
-                  value={content}
-                  InputProps={{
-                    readOnly: true,
-                    style: { 
-                      fontFamily: 'monospace',
-                      fontSize: '0.875rem',
-                      whiteSpace: 'pre',
-                      maxHeight: '60vh',
-                      overflowY: 'auto'
-                    }
-                  }}
-                />
-              </TabPanel>
+                {error && (
+                  <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>
+                )}
+                
+                {loading ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+                    <CircularProgress />
+                  </Box>
+                ) : filenames.length === 0 ? (
+                  <Alert severity="info">
+                    No files found in this torrent or files are still downloading.
+                  </Alert>
+                ) : (
+                  // Rest of your file display code
+                  <TabPanel key={filename} value={activeTab} index={index}>
+                    <Box sx={{ mb: 2, display: 'flex', justifyContent: 'flex-end' }}>
+                      <Button
+                        startIcon={<CloudDownloadIcon />}
+                        onClick={() => downloadFile(filename, content)}
+                      >
+                        Download
+                      </Button>
+                    </Box>
+                    
+                    <TextField
+                      multiline
+                      fullWidth
+                      variant="outlined"
+                      value={content}
+                      InputProps={{
+                        readOnly: true,
+                        style: { 
+                          fontFamily: 'monospace',
+                          fontSize: '0.875rem',
+                          whiteSpace: 'pre',
+                          maxHeight: '60vh',
+                          overflowY: 'auto'
+                        }
+                      }}
+                    />
+                  </TabPanel>
+                )}
+              </Paper>
             );
           })}
         </>

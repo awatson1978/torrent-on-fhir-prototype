@@ -29,11 +29,12 @@
     "meteor-desktop": "^2.2.5",
     "meteor-node-stubs": "^1.2.5",
     "moment": "^2.29.4",
-    "parse-torrent": "^11.0.18",
+    "parse-torrent": "^9.1.4",
     "process": "^0.11.10",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-monaco-editor": "^0.58.0",
+    "uint8-util": "^2.1.9",
     "webtorrent": "^1.9.7"
   },
   "devDependencies": {
