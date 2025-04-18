@@ -13,22 +13,33 @@ Meteor.methods({
    * @param {Object} metadata - Additional metadata
    * @return {Object} Added torrent info
    */
-  'torrents.add': function(magnetUri, metadata = {}) {
+  'torrents.add': async function(magnetUri, metadata = {}) {
     check(magnetUri, String);
     check(metadata, Object);
     
-    const result = Promise.await(WebTorrentServer.addTorrent(magnetUri));
+    console.log('Adding torrent from magnet URI:', magnetUri);
     
-    // Update metadata
-    if (Object.keys(metadata).length > 0) {
-      Meteor.call('torrents.updateMeta', result.infoHash, metadata);
+    try {
+      const result = await WebTorrentServer.addTorrent(magnetUri);
+      
+      // Update metadata
+      if (Object.keys(metadata).length > 0) {
+        try {
+          await Meteor.callAsync('torrents.updateMeta', result.infoHash, metadata);
+        } catch (error) {
+          console.error('Error updating metadata:', error);
+        }
+      }
+      
+      return {
+        infoHash: result.infoHash,
+        name: result.name,
+        magnetURI: result.magnetURI
+      };
+    } catch (error) {
+      console.error('Error adding torrent:', error);
+      throw new Meteor.Error('add-torrent-failed', 'Failed to add torrent: ' + error.message);
     }
-    
-    return {
-      infoHash: result.infoHash,
-      name: result.name,
-      magnetURI: result.magnetURI
-    };
   },
   
   /**
@@ -112,10 +123,15 @@ Meteor.methods({
    * @param {String} infoHash - Info hash of the torrent
    * @return {Object} Object with filename keys and content values
    */
-  'torrents.getAllFileContents': function(infoHash) {
+  'torrents.getAllFileContents': async function(infoHash) {
     check(infoHash, String);
     
-    return Promise.await(WebTorrentServer.getAllFileContents(infoHash));
+    try {
+      const contents = await WebTorrentServer.getAllFileContents(infoHash);
+      return contents;
+    } catch (error) {
+      throw new Meteor.Error(error.error || 'error', error.reason || error.message);
+    }
   },
   
   /**

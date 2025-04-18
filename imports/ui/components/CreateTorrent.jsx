@@ -33,8 +33,8 @@ function CreateTorrent() {
         console.error('Error adding torrent:', err);
         setError('Error adding torrent: ' + err.message);
       } else {
-        setSuccessMessage('Torrent added successfully!');
-        console.log('Torrent added:', result);
+        console.log('Torrent added successfully:', result);
+        setSuccessMessage('Torrent added successfully: ' + (result.name || result.infoHash));
         setMagnetUri('');
       }
     });

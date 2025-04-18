@@ -61,5 +61,33 @@ Meteor.methods({
         timestamp: new Date()
       };
     }
+  },
+  'debug.testPeers': async function() {
+    const client = WebTorrentServer.getClient();
+    if (!client) return { status: 'Client not initialized' };
+    
+    // Log information about all loaded torrents
+    const torrents = WebTorrentServer.getAllTorrents();
+    console.log(`Current torrents loaded: ${torrents.length}`);
+    
+    torrents.forEach(torrent => {
+      console.log(`Torrent: ${torrent.name} (${torrent.infoHash})`);
+      console.log(`- Peers: ${torrent.numPeers}`);
+      console.log(`- Progress: ${Math.round(torrent.progress * 100)}%`);
+      console.log(`- Downloaded: ${torrent.downloaded} bytes`);
+      
+      // Try to announce to trackers
+      torrent.announce();
+    });
+    
+    return {
+      torrents: torrents.map(t => ({
+        name: t.name,
+        infoHash: t.infoHash,
+        peers: t.numPeers,
+        progress: Math.round(t.progress * 100)
+      })),
+      trackers: client._trackers ? Object.keys(client._trackers).length : 0
+    };
   }
 });

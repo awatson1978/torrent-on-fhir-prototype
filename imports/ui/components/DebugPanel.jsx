@@ -95,11 +95,11 @@ function DebugPanel() {
   
   // Test connection to server
   function testConnection() {
-    Meteor.call('ping', function(error, result) {
-      if (error) {
-        alert(`Server connection error: ${error.message}`);
+    Meteor.call('debug.testPeers', function(err, result) {
+      if (err) {
+        alert('Error: ' + err.message);
       } else {
-        alert(`Server responded: ${result}`);
+        alert('Peer test result: ' + JSON.stringify(result));
       }
     });
   }
@@ -133,6 +133,14 @@ function DebugPanel() {
           <Box sx={{ mt: 2 }}>
             <Button variant="contained" color="primary" onClick={testConnection} sx={{ mr: 1 }}>
               Test Server
+            </Button>
+            <Button 
+              variant="outlined" 
+              color="primary" 
+              onClick={testConnection}
+              sx={{ mr: 1 }}
+            >
+              Test P2P
             </Button>
           </Box>
           
