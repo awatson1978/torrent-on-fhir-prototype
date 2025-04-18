@@ -21,6 +21,47 @@ try {
 }
 
 /**
+ * Safe announce wrapper function that checks if the announce method exists
+ * @param {Object} torrent - The torrent to announce
+ */
+function safeAnnounce(torrent) {
+  if (!torrent) return;
+  
+  try {
+    // Check if the torrent has an announce method
+    if (typeof torrent.announce === 'function') {
+      torrent.announce();
+      console.log(`Announced torrent ${torrent.name || 'Unnamed'} (${torrent.infoHash}) to trackers`);
+    } else if (torrent._announce && typeof torrent._announce === 'function') {
+      // Some versions use _announce instead
+      torrent._announce();
+      console.log(`Used _announce for torrent ${torrent.name || 'Unnamed'} (${torrent.infoHash})`);
+    } else if (torrent.discovery && typeof torrent.discovery.announce === 'function') {
+      // Try through the discovery object if available
+      torrent.discovery.announce();
+      console.log(`Used discovery.announce for torrent ${torrent.name || 'Unnamed'} (${torrent.infoHash})`);
+    } else {
+      // If no announce method is available, we'll try to restart the DHT and tracker updates
+      if (torrent.discovery) {
+        if (torrent.discovery.dht && typeof torrent.discovery.dht.announce === 'function') {
+          torrent.discovery.dht.announce(torrent.infoHash);
+          console.log(`Used DHT announce for torrent ${torrent.infoHash}`);
+        }
+        
+        if (torrent.discovery.tracker && typeof torrent.discovery.tracker.announce === 'function') {
+          torrent.discovery.tracker.announce();
+          console.log(`Used tracker announce for torrent ${torrent.infoHash}`);
+        }
+      } else {
+        console.log(`No announce method available for torrent ${torrent.infoHash}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`Error trying to announce torrent ${torrent ? torrent.infoHash : 'unknown'}:`, err.message);
+  }
+}
+
+/**
  * WebTorrent server service
  * Manages the WebTorrent client and torrent instances on the server
  */
@@ -216,9 +257,10 @@ export const WebTorrentServer = {
           // Setup event handlers
           self._setupTorrentEvents(torrent);
           
-          // Force announce to find peers
+          // Force announce to find peers - using our safe announce method
           try {
-            torrent.announce();
+            console.log(`Attempting to announce torrent ${torrent.name}`);
+            safeAnnounce(torrent);
           } catch (announceErr) {
             console.warn('Error announcing torrent:', announceErr);
           }
@@ -276,9 +318,10 @@ export const WebTorrentServer = {
           // Setup event handlers
           self._setupTorrentEvents(torrent);
           
-          // Force announce to find peers
+          // Force announce to find peers - using our safe announce method
           try {
-            torrent.announce();
+            console.log(`Attempting to announce new torrent ${torrent.name}`);
+            safeAnnounce(torrent);
           } catch (announceErr) {
             console.warn('Error announcing torrent:', announceErr);
           }
