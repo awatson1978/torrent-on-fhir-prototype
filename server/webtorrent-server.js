@@ -125,18 +125,25 @@ export const WebTorrentServer = {
         
         console.log('Creating WebTorrent server with config:', config);
         
-        // Create storage directory if it doesn't exist
+        // Create storage directory if it doesn't exist with PROPER variable substitution
         const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
-        if (!fs.existsSync(storagePath)) {
-          fs.mkdirSync(storagePath, { recursive: true });
-          console.log(`Created storage directory: ${storagePath}`);
+        const port = process.env.PORT || 3000;
+        const resolvedPath = storagePath.replace(/\${PORT}/g, port);
+        
+        console.log(`Using resolved storage path: ${resolvedPath}`);
+
+
+        if (!fs.existsSync(resolvedPath)) {
+          fs.mkdirSync(resolvedPath, { recursive: true });
+          console.log(`Created storage directory: ${resolvedPath}`);
         }
         
         try {
           client = new WebTorrent({
             tracker: config.tracker,
             dht: config.dht,
-            webSeeds: config.webSeeds
+            webSeeds: config.webSeeds,
+            path: resolvedPath // Add the path here as well
           });
           
           if (!client) {
@@ -178,6 +185,56 @@ export const WebTorrentServer = {
     }.bind(this));
     
     return initializePromise;
+  },
+
+  /**
+   * Get file contents directly from disk for a torrent
+   * @param {String} infoHash - Info hash of the torrent
+   * @return {Promise<Object>} Object with filename keys and content values
+   */
+  getFileContentsFromDisk: async function(infoHash) {
+    const fs = Npm.require('fs');
+    const path = Npm.require('path');
+    
+    try {
+      // Get the torrent from database
+      const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+      
+      if (!torrentRecord || !torrentRecord.files || torrentRecord.files.length === 0) {
+        throw new Error('Torrent not found or has no files');
+      }
+      
+      // Get the storage path with proper variable substitution
+      const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+      const port = process.env.PORT || 3000;
+      const resolvedPath = storagePath.replace(/\${PORT}/g, port);
+      
+      console.log(`Checking for files on disk in: ${resolvedPath}`);
+      
+      // Try to read files directly from disk
+      const contents = {};
+      
+      for (const fileInfo of torrentRecord.files) {
+        const filePath = path.join(resolvedPath, fileInfo.name);
+        console.log(`Checking for file: ${filePath}`);
+        
+        try {
+          if (fs.existsSync(filePath)) {
+            contents[fileInfo.name] = fs.readFileSync(filePath, 'utf8');
+            console.log(`Found and read file: ${fileInfo.name}`);
+          } else {
+            console.log(`File not found on disk: ${fileInfo.name}`);
+          }
+        } catch (err) {
+          console.error(`Error reading file ${fileInfo.name}:`, err);
+        }
+      }
+      
+      return contents;
+    } catch (err) {
+      console.error('Error reading files from disk:', err);
+      throw err;
+    }
   },
 
   _initializeTrackers: function (client) {

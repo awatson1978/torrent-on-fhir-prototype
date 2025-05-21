@@ -1,11 +1,14 @@
 import { Meteor } from 'meteor/meteor';
-let parseTorrent = null;
+import parseTorrent from 'parse-torrent'
+import fs from 'fs'
 
-try {
-  parseTorrent = require('parse-torrent');
-} catch (err) {
-  console.error('Error loading parse-torrent:', err);
-}
+// let parseTorrent = null;
+
+// try {
+//   parseTorrent = require('parse-torrent');
+// } catch (err) {
+//   console.error('Error loading parse-torrent:', err);
+// }
 
 export const TorrentParser = {
   /**

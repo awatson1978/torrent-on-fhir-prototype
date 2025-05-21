@@ -94,6 +94,21 @@ function DebugPanel() {
       setExpanded(isExpanded ? panel : false);
     };
   }
+
+  function fixStoragePath() {
+    setLoading(true);
+    Meteor.call('debug.fixStoragePath', function(err, result) {
+      setLoading(false);
+      if (err) {
+        console.error('Error fixing storage path:', err);
+        alert('Error fixing storage path: ' + err.message);
+      } else {
+        console.log('Storage path result:', result);
+        alert(`Storage path fixed:\n- Path: ${result.storagePath}\n- Path exists: ${result.pathExists}\n- Torrents: ${result.torrents}`);
+      }
+    });
+  }
+
   // Test connection to server
   function testConnection() {
     Meteor.call('debug.testPeers', function(err, result) {
@@ -389,7 +404,15 @@ function DebugPanel() {
             >
               Test Retrieval
             </Button>  
-
+            <Button 
+              variant="contained" 
+              color="primary" 
+              onClick={fixStoragePath}
+              disabled={loading}
+              sx={{ mr: 1 }}
+            >
+              Fix Storage
+            </Button>
 
             
           </Box>

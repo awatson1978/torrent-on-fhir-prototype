@@ -555,5 +555,53 @@ Meteor.methods({
       console.error('Error testing file retrieval:', error);
       throw new Meteor.Error('retrieval-failed', error.message || 'Failed to test file retrieval');
     }
+  },
+  'debug.fixStoragePath': async function() {
+    try {
+      // Get all torrents from database
+      const torrents = await TorrentsCollection.find({}).fetchAsync();
+      console.log(`Found ${torrents.length} torrents in database`);
+      
+      // Get the proper storage path
+      const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+      const port = process.env.PORT || 3000;
+      const resolvedPath = storagePath.replace(/\${PORT}/g, port);
+      
+      console.log(`Using resolved storage path: ${resolvedPath}`);
+      
+      // Ensure the directory exists
+      const fs = Npm.require('fs');
+      
+      if (!fs.existsSync(resolvedPath)) {
+        fs.mkdirSync(resolvedPath, { recursive: true });
+        console.log(`Created storage directory: ${resolvedPath}`);
+      }
+      
+      // Check for direct file access to sample files
+      const assets = Assets.absoluteFilePath("sample-bundle.json");
+      console.log(`Sample bundle path: ${assets}`);
+      
+      // Copy sample file to storage (if needed)
+      const sampleData = Assets.getText("sample-bundle.json");
+      if (sampleData) {
+        const path = Npm.require('path');
+        const samplePath = path.join(resolvedPath, "sample-bundle.json");
+        fs.writeFileSync(samplePath, sampleData, 'utf8');
+        console.log(`Copied sample file to: ${samplePath}`);
+      }
+      
+      return {
+        status: 'success',
+        torrents: torrents.length,
+        storagePath: resolvedPath,
+        pathExists: fs.existsSync(resolvedPath)
+      };
+    } catch (err) {
+      console.error('Error fixing storage path:', err);
+      return {
+        status: 'error',
+        error: err.message
+      };
+    }
   }
 });
