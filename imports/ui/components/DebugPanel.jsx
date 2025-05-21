@@ -14,7 +14,6 @@ import { Settings } from '../../api/settings/settings';
 // Debug component to display application state and troubleshoot issues
 function DebugPanel() {
   const [loading, setLoading] = useState(false);
-
   const [isOpen, setIsOpen] = useState(false);
   const [runtimeInfo, setRuntimeInfo] = useState({
     meteorStatus: 'Checking...',
@@ -94,21 +93,7 @@ function DebugPanel() {
       setExpanded(isExpanded ? panel : false);
     };
   }
-
-  function fixStoragePath() {
-    setLoading(true);
-    Meteor.call('debug.fixStoragePath', function(err, result) {
-      setLoading(false);
-      if (err) {
-        console.error('Error fixing storage path:', err);
-        alert('Error fixing storage path: ' + err.message);
-      } else {
-        console.log('Storage path result:', result);
-        alert(`Storage path fixed:\n- Path: ${result.storagePath}\n- Path exists: ${result.pathExists}\n- Torrents: ${result.torrents}`);
-      }
-    });
-  }
-
+  
   // Test connection to server
   function testConnection() {
     Meteor.call('debug.testPeers', function(err, result) {
@@ -119,6 +104,7 @@ function DebugPanel() {
       }
     });
   }
+  
   function repairTorrents() {
     setLoading(true);
     Meteor.call('debug.repairTorrents', function(err, result) {
@@ -132,6 +118,7 @@ function DebugPanel() {
       }
     });
   }
+  
   function testTrackerConnectivity(){
     Meteor.call('debug.checkTorrentConnection', selectedTorrentHash, function(err, result) {
       if (err) {
@@ -143,6 +130,7 @@ function DebugPanel() {
       }
     });
   }
+  
   function testTorrentFiles(){
     // First get a list of torrents
     Meteor.call('debug.getTorrentInfo', function(err, result) {
@@ -209,6 +197,7 @@ function DebugPanel() {
       });
     });
   }
+  
   function testFileRetrieval() {
     // First get a list of torrents
     Meteor.call('debug.getTorrentInfo', function(err, result) {
@@ -243,6 +232,7 @@ function DebugPanel() {
       });
     });
   }
+  
   function createSampleTorrent(){
     Meteor.call('debug.createSampleTorrent', function(err, result) {
       if (err) {
@@ -254,6 +244,7 @@ function DebugPanel() {
       }
     });
   }
+  
   function checkTorrentsInDatabase(){
     Meteor.call('debug.getTorrentInfo', function(err, result) {
       if (err) {
@@ -266,6 +257,7 @@ function DebugPanel() {
       }
     });
   }
+  
   function checkServerStatus() {
     setLoading(true);
     Meteor.call('debug.getServerStatus', function(err, result) {
@@ -304,6 +296,67 @@ function DebugPanel() {
     });
   }
   
+  function fixStoragePath() {
+    setLoading(true);
+    Meteor.call('debug.fixStoragePath', function(err, result) {
+      setLoading(false);
+      if (err) {
+        console.error('Error fixing storage path:', err);
+        alert('Error fixing storage path: ' + err.message);
+      } else {
+        console.log('Storage path result:', result);
+        alert(`Storage path fixed:\n- Path: ${result.storagePath}\n- Path exists: ${result.pathExists}\n- Files created: ${result.filesCreated.join(', ')}\n- Files in directory: ${result.filesInDirectory.join(', ')}`);
+      }
+    });
+  }
+  
+  function testAllStrategies() {
+    // First get a list of torrents
+    Meteor.call('debug.getTorrentInfo', function(err, result) {
+      if (err) {
+        console.error('Error getting torrent info:', err);
+        alert('Error checking torrents: ' + err.message);
+        return;
+      }
+      
+      const clientTorrents = result.clientTorrents || [];
+      if (clientTorrents.length === 0) {
+        alert('No torrents found in client. Add a torrent first.');
+        return;
+      }
+      
+      const firstTorrentHash = clientTorrents[0].infoHash;
+      console.log('Testing all file retrieval strategies for:', firstTorrentHash);
+      
+      setLoading(true);
+      Meteor.call('debug.testFileRetrievalStrategies', firstTorrentHash, function(testErr, testResult) {
+        setLoading(false);
+        if (testErr) {
+          console.error('Error testing strategies:', testErr);
+          alert('Error testing strategies: ' + testErr.message);
+        } else {
+          console.log('Strategy test results:', testResult);
+          
+          let message = `File Retrieval Strategy Test Results:\n\n`;
+          
+          Object.keys(testResult.strategies).forEach(strategy => {
+            const result = testResult.strategies[strategy];
+            message += `${strategy}: ${result.status}\n`;
+            if (result.status === 'success') {
+              message += `  - Content length: ${result.contentLength}\n`;
+              message += `  - Preview: ${result.preview}...\n`;
+            } else if (result.status === 'failed') {
+              message += `  - Reason: ${result.reason}\n`;
+            }
+            message += '\n';
+          });
+          
+          alert(message);
+        }
+      });
+    });
+  }
+  
   return (
     <>
       <Button 
@@ -330,18 +383,7 @@ function DebugPanel() {
         >
           <Typography variant="h6">Debug Panel</Typography>
           
-          <Box sx={{ mt: 2 }}>
-            <Button variant="contained" color="primary" onClick={testConnection} sx={{ mr: 1 }}>
-              Test Server
-            </Button>
-            <Button 
-              variant="contained" 
-              color="primary" 
-              onClick={testConnection}
-              sx={{ mr: 1 }}
-            >
-              Test P2P
-            </Button>
+          <Box sx={{ mt: 2 }}>            
             <Button 
               variant="contained" 
               color="primary" 
@@ -413,8 +455,15 @@ function DebugPanel() {
             >
               Fix Storage
             </Button>
-
-            
+            <Button 
+              variant="contained" 
+              color="primary" 
+              onClick={testAllStrategies}
+              disabled={loading}
+              sx={{ mr: 1 }}
+            >
+              Test All
+            </Button>
           </Box>
           
           <Box sx={{ mt: 2 }}>

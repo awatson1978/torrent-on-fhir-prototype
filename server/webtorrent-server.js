@@ -12,6 +12,13 @@ let client = null;
 let isInitializing = false;
 let initializePromise = null;
 
+// Helper function to resolve storage path with proper PORT substitution
+function getResolvedStoragePath() {
+  const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+  const port = process.env.PORT || 3000;
+  return storagePath.replace(/\$\{PORT\}/g, port);
+}
+
 // Use require at the top-level instead of within functions
 let WebTorrent = null;
 try {
@@ -273,13 +280,17 @@ export const WebTorrentServer = {
       if (torrents.length === 0) {
         return;
       }
+
+      const resolvedStoragePath = getResolvedStoragePath();
       
       // Add each torrent to the client
       for (const torrent of torrents) {
         if (torrent.magnetURI) {
           try {
             console.log(`Adding torrent ${torrent.name} (${torrent.infoHash}) to client`);
-            await this.addTorrent(torrent.magnetURI);
+            await this.addTorrent(torrent.magnetURI, {
+              path: resolvedStoragePath
+            });
           } catch (err) {
             console.error(`Error adding torrent ${torrent.infoHash} to client:`, err);
           }
@@ -336,14 +347,21 @@ export const WebTorrentServer = {
           console.warn('Could not parse torrentId:', parseErr.message);
         }
         
-        // Set the download path
-        const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+        // // Set the download path
+        // const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+        // const options = {
+        //   path: storagePath,
+        //   ...opts
+        // };
+
+        // Set the download path with resolved storage path
+        const resolvedStoragePath = opts.path || getResolvedStoragePath();
         const options = {
-          path: storagePath,
+          path: resolvedStoragePath,
           ...opts
         };
         
-        console.log(`Adding torrent to client with path: ${storagePath}`);
+        console.log(`Adding torrent to client with path: ${resolvedStoragePath}`);
         
         torrentClient.add(torrentId, options, function(torrent) {
           // Store reference to the torrent
@@ -413,10 +431,20 @@ export const WebTorrentServer = {
           }).then(resolve).catch(reject);
         }
         
-        // Set the seed path
-        const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+        // // Set the seed path
+        // const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+        // const options = {
+        //   path: storagePath,
+        //   ...opts,
+        //   announceList: Settings.get('public.webtorrent.announceList', [
+        //     ['wss://tracker.openwebtorrent.com']
+        //   ])
+        // };
+
+        // Set the seed path with resolved storage path
+        const resolvedStoragePath = opts.path || getResolvedStoragePath();
         const options = {
-          path: storagePath,
+          path: resolvedStoragePath,
           ...opts,
           announceList: Settings.get('public.webtorrent.announceList', [
             ['wss://tracker.openwebtorrent.com']

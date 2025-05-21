@@ -1,3 +1,5 @@
+// server/methods/torrent-methods.js - Fixed version with proper path resolution and fallback
+
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
 import fs from 'fs';
@@ -6,6 +8,13 @@ import { WebTorrentServer } from '../webtorrent-server';
 import { TorrentsCollection } from '/imports/api/torrents/torrents';
 import { Settings } from '/imports/api/settings/settings';
 import { FhirUtils } from '/imports/api/fhir/fhir-utils';
+
+// Helper function to resolve storage path with proper PORT substitution
+function getResolvedStoragePath() {
+  const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+  const port = process.env.PORT || 3000;
+  return storagePath.replace(/\$\{PORT\}/g, port);
+}
 
 Meteor.methods({
   /**
@@ -40,7 +49,11 @@ Meteor.methods({
         }
       }
       
-      const result = await WebTorrentServer.addTorrent(magnetUri);
+      // Pass resolved storage path
+      const resolvedPath = getResolvedStoragePath();
+      const result = await WebTorrentServer.addTorrent(magnetUri, {
+        path: resolvedPath
+      });
       
       // Update metadata
       if (Object.keys(metadata).length > 0) {
@@ -95,8 +108,9 @@ Meteor.methods({
     }
     
     try {
-      // Write the files to disk temporarily
-      const tempPath = path.join(Settings.get('private.storage.tempPath', '/tmp/fhir-torrents'), `temp-${Date.now()}`);
+      // Write the files to disk temporarily with resolved path
+      const resolvedPath = getResolvedStoragePath();
+      const tempPath = path.join(resolvedPath, `temp-${Date.now()}`);
       
       if (!fs.existsSync(tempPath)) {
         fs.mkdirSync(tempPath, { recursive: true });
@@ -110,10 +124,11 @@ Meteor.methods({
         tempFiles.push(filePath);
       });
       
-      // Create the torrent
+      // Create the torrent with resolved path
       const result = await WebTorrentServer.createTorrent(tempPath, {
         name: name,
-        comment: metadata.description || ''
+        comment: metadata.description || '',
+        path: resolvedPath
       });
       
       // Clean up temp files (after a delay to ensure the torrent is created)
@@ -133,21 +148,15 @@ Meteor.methods({
         }
       }, 5000);
       
-      // Instead of calling updateMeta, directly update the torrent record here
-      // This ensures we're working with a torrent that exists in the database
+      // Update metadata directly
       if (Object.keys(metadata).length > 0) {
         try {
-          // Wait a bit for the torrent to be saved to the database
           await new Promise(resolve => Meteor.setTimeout(resolve, 500));
           
-          // Check if torrent exists in database
           const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash: result.infoHash });
           
           if (torrentRecord) {
-            // Update with metadata
             const updateObj = {};
-            
-            // Only include allowed fields
             const allowedFields = ['description', 'fhirType', 'meta'];
             Object.keys(metadata).forEach(function(key) {
               if (allowedFields.includes(key)) {
@@ -161,12 +170,9 @@ Meteor.methods({
                 { $set: updateObj }
               );
             }
-          } else {
-            console.log(`Torrent with infoHash ${result.infoHash} not found in database yet.`);
           }
         } catch (err) {
           console.error('Error updating torrent metadata:', err);
-          // Don't throw the error, just log it - we still want to return the torrent info
         }
       }
       
@@ -178,6 +184,166 @@ Meteor.methods({
     } catch (error) {
       console.error('Error creating torrent:', error);
       throw new Meteor.Error('create-failed', error.message || 'Failed to create torrent');
+    }
+  },
+  
+  /**
+   * Get all file contents from a torrent - Enhanced version with fallback mechanisms
+   * @param {String} infoHash - Info hash of the torrent
+   * @return {Object} Object with filename keys and content values
+   */
+  'torrents.getAllFileContents': async function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`Received request for all file contents of torrent: ${infoHash}`);
+    
+    try {
+      // Check if the torrent exists in the database first
+      const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+      
+      if (!torrentRecord) {
+        console.error(`Torrent ${infoHash} not found in database`);
+        throw new Meteor.Error('not-found', 'Torrent not found in database');
+      }
+      
+      console.log(`Found torrent in database: ${torrentRecord.name}, checking WebTorrent client`);
+      
+      let torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      // If torrent exists and has files, try to get them via WebTorrent first
+      if (torrent && torrent.files && torrent.files.length > 0) {
+        console.log(`Found torrent ${infoHash} with ${torrent.files.length} files, trying WebTorrent retrieval...`);
+        
+        try {
+          // Try with shorter timeout and immediate fallback
+          const filePromises = torrent.files.map(function(file, index) {
+            return new Promise(function(resolveFile, rejectFile) {
+              console.log(`Getting buffer for file: ${file.name} (${file.length} bytes)`);
+              
+              // Shorter timeout for WebTorrent method
+              const timeout = Meteor.setTimeout(() => {
+                console.log(`WebTorrent timeout for ${file.name}, will try disk fallback`);
+                rejectFile(new Error(`WebTorrent timeout for ${file.name}`));
+              }, 5000); // Only wait 5 seconds
+              
+              file.getBuffer(function(err, buffer) {
+                clearTimeout(timeout);
+                
+                if (err) {
+                  console.log(`WebTorrent error for ${file.name}:`, err.message);
+                  rejectFile(err);
+                } else {
+                  try {
+                    const content = buffer.toString('utf8');
+                    console.log(`WebTorrent success for ${file.name}, length: ${content.length}`);
+                    resolveFile({ name: file.name, content });
+                  } catch (e) {
+                    console.error(`Buffer conversion error for ${file.name}:`, e);
+                    rejectFile(e);
+                  }
+                }
+              });
+            });
+          });
+          
+          const results = await Promise.allSettled(filePromises);
+          const webTorrentContents = {};
+          
+          results.forEach(result => {
+            if (result.status === 'fulfilled') {
+              webTorrentContents[result.value.name] = result.value.content;
+            }
+          });
+          
+          // If we got all files via WebTorrent, return them
+          if (Object.keys(webTorrentContents).length === torrent.files.length) {
+            console.log(`Successfully retrieved all ${torrent.files.length} files via WebTorrent`);
+            return webTorrentContents;
+          } else {
+            console.log(`Only got ${Object.keys(webTorrentContents).length}/${torrent.files.length} files via WebTorrent, trying disk fallback`);
+          }
+        } catch (webTorrentError) {
+          console.log(`WebTorrent retrieval failed, trying disk fallback:`, webTorrentError.message);
+        }
+      }
+      
+      // Fallback: Try to read files directly from disk
+      console.log(`Attempting disk fallback for torrent ${infoHash}`);
+      
+      const resolvedPath = getResolvedStoragePath();
+      console.log(`Using storage path: ${resolvedPath}`);
+      
+      if (!fs.existsSync(resolvedPath)) {
+        console.log(`Storage path does not exist: ${resolvedPath}`);
+        throw new Meteor.Error('storage-missing', 'Storage directory does not exist');
+      }
+      
+      const diskContents = {};
+      
+      // Try different possible file locations
+      const possiblePaths = [
+        resolvedPath, // Base storage path
+        path.join(resolvedPath, torrentRecord.name || ''), // Subfolder with torrent name
+        path.join(resolvedPath, infoHash), // Subfolder with info hash
+      ];
+      
+      if (torrentRecord.files && torrentRecord.files.length > 0) {
+        for (const fileInfo of torrentRecord.files) {
+          let found = false;
+          
+          for (const basePath of possiblePaths) {
+            const filePath = path.join(basePath, fileInfo.name);
+            console.log(`Checking for file: ${filePath}`);
+            
+            try {
+              if (fs.existsSync(filePath)) {
+                const content = fs.readFileSync(filePath, 'utf8');
+                diskContents[fileInfo.name] = content;
+                console.log(`Found file on disk: ${fileInfo.name} (${content.length} bytes)`);
+                found = true;
+                break;
+              }
+            } catch (readErr) {
+              console.error(`Error reading file ${filePath}:`, readErr.message);
+            }
+          }
+          
+          if (!found) {
+            console.log(`File not found on disk: ${fileInfo.name}`);
+          }
+        }
+      }
+      
+      // If we found files on disk, return them
+      if (Object.keys(diskContents).length > 0) {
+        console.log(`Found ${Object.keys(diskContents).length} files on disk`);
+        return diskContents;
+      }
+      
+      // Last resort: Try to create sample content if this is the sample torrent
+      if (torrentRecord.name === 'Sample FHIR Bundle') {
+        console.log('Attempting to recreate sample content');
+        try {
+          const sampleData = Assets.getText('sample-bundle.json');
+          if (sampleData) {
+            console.log('Found sample bundle in assets, returning it');
+            return {
+              'sample-bundle.json': sampleData
+            };
+          }
+        } catch (assetErr) {
+          console.error('Error reading sample bundle from assets:', assetErr);
+        }
+      }
+      
+      throw new Meteor.Error('no-content', 'Could not retrieve file contents via WebTorrent, disk, or assets');
+      
+    } catch (error) {
+      console.error(`Error getting file contents for torrent ${infoHash}:`, error);
+      throw new Meteor.Error(
+        error.error || 'error', 
+        error.reason || error.message || 'Unknown error'
+      );
     }
   },
   
@@ -221,175 +387,13 @@ Meteor.methods({
   },
   
   /**
-   * Get all file contents from a torrent
-   * @param {String} infoHash - Info hash of the torrent
-   * @return {Object} Object with filename keys and content values
-   */
-  'torrents.getAllFileContents': async function(infoHash) {
-    check(infoHash, String);
-    
-    console.log(`Received request for all file contents of torrent: ${infoHash}`);
-    
-    try {
-      // Check if the torrent exists in the database first
-      const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
-      
-      if (!torrentRecord) {
-        console.error(`Torrent ${infoHash} not found in database`);
-        throw new Meteor.Error('not-found', 'Torrent not found in database');
-      }
-      
-      console.log(`Found torrent in database: ${torrentRecord.name}, checking if it exists in WebTorrent client`);
-      
-      // Make sure the torrent is properly loaded in the client
-      let torrent = WebTorrentServer.getTorrent(infoHash);
-      
-      // If torrent not in client or has no files, try to reload it
-      if (!torrent || !torrent.files || torrent.files.length === 0) {
-        if (!torrentRecord.magnetURI) {
-          throw new Meteor.Error('missing-magnet', 'Torrent record has no magnet URI');
-        }
-        
-        console.log(`Torrent ${infoHash} not properly loaded, reloading from magnet URI`);
-        
-        // Force recreate with proper paths and options
-        if (torrent) {
-          // Remove existing torrent first to avoid "duplicate" error
-          await WebTorrentServer.removeTorrent(infoHash, false);
-        }
-        
-        // Add with proper storage path
-        const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
-        const port = process.env.PORT || 3000;
-        const realStoragePath = storagePath.replace(/\${PORT}/g, port);
-        
-        console.log(`Using resolved storage path: ${realStoragePath}`);
-        
-        torrent = await WebTorrentServer.addTorrent(torrentRecord.magnetURI, {
-          path: realStoragePath,
-          store: true
-        });
-        
-        // Wait a bit for torrent to fully initialize
-        await new Promise(r => Meteor.setTimeout(r, 3000));
-        
-        // Get fresh reference
-        torrent = WebTorrentServer.getTorrent(infoHash);
-        
-        if (!torrent) {
-          throw new Meteor.Error('load-failed', 'Failed to load torrent after retry');
-        }
-        
-        if (!torrent.files || torrent.files.length === 0) {
-          console.log(`Torrent reload completed but still has 0 files. Checking disk...`);
-          
-          // Check if files exist on disk directly
-          const fs = Npm.require('fs');
-          const path = Npm.require('path');
-          
-          if (torrentRecord.files && torrentRecord.files.length > 0) {
-            const fileContents = {};
-            
-            for (const fileInfo of torrentRecord.files) {
-              const filePath = path.join(realStoragePath, fileInfo.name);
-              console.log(`Checking for file on disk: ${filePath}`);
-              
-              try {
-                if (fs.existsSync(filePath)) {
-                  console.log(`Found file on disk: ${filePath}`);
-                  fileContents[fileInfo.name] = fs.readFileSync(filePath, 'utf8');
-                }
-              } catch (readErr) {
-                console.error(`Error reading file ${filePath}:`, readErr);
-              }
-            }
-            
-            if (Object.keys(fileContents).length > 0) {
-              console.log(`Found ${Object.keys(fileContents).length} files on disk directly`);
-              return fileContents;
-            }
-          }
-          
-          throw new Meteor.Error('no-files', 'Torrent loaded but contains no files');
-        }
-        
-        console.log(`Torrent reloaded successfully with ${torrent.files.length} files`);
-      }
-      
-      console.log(`Found torrent ${infoHash} with ${torrent.files.length} files, retrieving content...`);
-      
-      // Process files with better error handling
-      const filePromises = torrent.files.map(function(file) {
-        return new Promise(function(resolveFile, rejectFile) {
-          console.log(`Getting buffer for file: ${file.name} (${file.length} bytes)`);
-          
-          let timeout = null;
-          
-          // Add timeout for getBuffer call
-          timeout = Meteor.setTimeout(() => {
-            console.error(`Timeout getting buffer for ${file.name}`);
-            rejectFile(new Error(`Timeout getting buffer for ${file.name}`));
-          }, 30000);
-          
-          file.getBuffer(function(err, buffer) {
-            clearTimeout(timeout);
-            
-            if (err) {
-              console.error(`Error getting buffer for ${file.name}:`, err);
-              rejectFile(err);
-            } else {
-              try {
-                const content = buffer.toString('utf8');
-                console.log(`Successfully got content for ${file.name}, length: ${content.length}`);
-                resolveFile({ name: file.name, content });
-              } catch (e) {
-                console.error(`Error converting buffer for ${file.name}:`, e);
-                rejectFile(e);
-              }
-            }
-          });
-        });
-      });
-      
-      const results = await Promise.allSettled(filePromises);
-      const contents = {};
-      
-      results.forEach(result => {
-        if (result.status === 'fulfilled') {
-          contents[result.value.name] = result.value.content;
-        } else {
-          console.error(`Failed to get file:`, result.reason);
-        }
-      });
-      
-      const fileCount = Object.keys(contents).length;
-      console.log(`Successfully retrieved contents for ${fileCount}/${torrent.files.length} files`);
-      
-      if (fileCount === 0) {
-        throw new Meteor.Error('retrieval-failed', 'Could not retrieve any file contents');
-      }
-      
-      return contents;
-    } catch (error) {
-      console.error(`Error getting file contents for torrent ${infoHash}:`, error);
-      throw new Meteor.Error(
-        error.error || 'error', 
-        error.reason || error.message || 'Unknown error'
-      );
-    }
-  },
-  
-  /**
    * Pause a torrent
-   * @param {String} infoHash - Info hash of the torrent
-   * @return {Boolean} Success
    */
   'torrents.pause': async function(infoHash) {
     check(infoHash, String);
     
     const torrent = WebTorrentServer.getTorrent(infoHash);
     if (!torrent) {
-      // Try to repair torrent by reloading it
       try {
         console.log('Torrent not found in client, attempting to reload it');
         const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
@@ -399,16 +403,20 @@ Meteor.methods({
         }
         
         if (torrentRecord.magnetURI) {
-          await WebTorrentServer.addTorrent(torrentRecord.magnetURI);
-          // Try to get the torrent again after adding it
+          const resolvedPath = getResolvedStoragePath();
+          await WebTorrentServer.addTorrent(torrentRecord.magnetURI, {
+            path: resolvedPath
+          });
+          
           const reloadedTorrent = WebTorrentServer.getTorrent(infoHash);
           if (!reloadedTorrent) {
             throw new Meteor.Error('load-failed', 'Failed to load torrent');
           }
           
-          reloadedTorrent.pause();
+          if (typeof reloadedTorrent.pause === 'function') {
+            reloadedTorrent.pause();
+          }
           
-          // Update status in collection
           await TorrentsCollection.updateAsync(
             { infoHash },
             { $set: { 'status.state': 'paused' } }
@@ -425,9 +433,10 @@ Meteor.methods({
     }
     
     console.log('Pausing torrent:', infoHash);
-    torrent.pause();
+    if (typeof torrent.pause === 'function') {
+      torrent.pause();
+    }
     
-    // Update status in collection
     await TorrentsCollection.updateAsync(
       { infoHash },
       { $set: { 'status.state': 'paused' } }
@@ -438,15 +447,12 @@ Meteor.methods({
   
   /**
    * Resume a torrent
-   * @param {String} infoHash - Info hash of the torrent
-   * @return {Boolean} Success
    */
   'torrents.resume': async function(infoHash) {
     check(infoHash, String);
     
     const torrent = WebTorrentServer.getTorrent(infoHash);
     if (!torrent) {
-      // Try to repair torrent by reloading it
       try {
         console.log('Torrent not found in client, attempting to reload it');
         const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
@@ -456,10 +462,11 @@ Meteor.methods({
         }
         
         if (torrentRecord.magnetURI) {
-          await WebTorrentServer.addTorrent(torrentRecord.magnetURI);
-          // The torrent will start downloading automatically
+          const resolvedPath = getResolvedStoragePath();
+          await WebTorrentServer.addTorrent(torrentRecord.magnetURI, {
+            path: resolvedPath
+          });
           
-          // Update status in collection
           await TorrentsCollection.updateAsync(
             { infoHash },
             { $set: { 'status.state': 'downloading' } }
@@ -476,9 +483,10 @@ Meteor.methods({
     }
     
     console.log('Resuming torrent:', infoHash);
-    torrent.resume();
+    if (typeof torrent.resume === 'function') {
+      torrent.resume();
+    }
     
-    // Update status in collection
     await TorrentsCollection.updateAsync(
       { infoHash },
       { $set: { 'status.state': torrent.done ? 'seeding' : 'downloading' } }
@@ -496,10 +504,7 @@ Meteor.methods({
     check(infoHash, String);
     check(metadata, Object);
     
-    // Fields that can be updated
     const allowedFields = ['description', 'fhirType', 'meta'];
-    
-    // Build update object with only allowed fields
     const updateObj = {};
     
     Object.keys(metadata).forEach(function(key) {
@@ -508,13 +513,11 @@ Meteor.methods({
       }
     });
     
-    // Make sure torrent exists - use findOneAsync
     const torrent = await TorrentsCollection.findOneAsync({ infoHash });
     if (!torrent) {
       throw new Meteor.Error('not-found', 'Torrent not found');
     }
     
-    // Use updateAsync
     return await TorrentsCollection.updateAsync(
       { infoHash }, 
       { $set: updateObj }
@@ -534,13 +537,11 @@ Meteor.methods({
       profile: Match.Optional(String)
     });
     
-    // Make sure torrent exists - use findOneAsync
     const torrent = await TorrentsCollection.findOneAsync({ infoHash });
     if (!torrent) {
       throw new Meteor.Error('not-found', 'Torrent not found');
     }
     
-    // Use updateAsync
     return await TorrentsCollection.updateAsync(
       { infoHash }, 
       { $set: { meta: fhirMeta } }

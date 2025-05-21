@@ -558,43 +558,71 @@ Meteor.methods({
   },
   'debug.fixStoragePath': async function() {
     try {
+      const fs = Npm.require('fs');
+      const path = Npm.require('path');
+      
       // Get all torrents from database
       const torrents = await TorrentsCollection.find({}).fetchAsync();
       console.log(`Found ${torrents.length} torrents in database`);
       
-      // Get the proper storage path
+      // Get the proper storage path with PORT resolution
       const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
       const port = process.env.PORT || 3000;
       const resolvedPath = storagePath.replace(/\${PORT}/g, port);
       
-      console.log(`Using resolved storage path: ${resolvedPath}`);
+      console.log(`Raw storage path: ${storagePath}`);
+      console.log(`Resolved storage path: ${resolvedPath}`);
+      console.log(`Port: ${port}`);
       
       // Ensure the directory exists
-      const fs = Npm.require('fs');
-      
       if (!fs.existsSync(resolvedPath)) {
         fs.mkdirSync(resolvedPath, { recursive: true });
         console.log(`Created storage directory: ${resolvedPath}`);
       }
       
-      // Check for direct file access to sample files
-      const assets = Assets.absoluteFilePath("sample-bundle.json");
-      console.log(`Sample bundle path: ${assets}`);
+      // Check for sample files and create them if missing
+      const sampleFiles = {};
       
-      // Copy sample file to storage (if needed)
-      const sampleData = Assets.getText("sample-bundle.json");
-      if (sampleData) {
-        const path = Npm.require('path');
-        const samplePath = path.join(resolvedPath, "sample-bundle.json");
-        fs.writeFileSync(samplePath, sampleData, 'utf8');
-        console.log(`Copied sample file to: ${samplePath}`);
+      try {
+        // Try to get sample bundle from Assets
+        const sampleData = Assets.getText("sample-bundle.json");
+        if (sampleData) {
+          sampleFiles['sample-bundle.json'] = sampleData;
+          
+          // Write sample file to storage directory
+          const samplePath = path.join(resolvedPath, "sample-bundle.json");
+          fs.writeFileSync(samplePath, sampleData, 'utf8');
+          console.log(`Created sample file at: ${samplePath} (${sampleData.length} bytes)`);
+        }
+      } catch (sampleErr) {
+        console.log('Could not load sample from Assets:', sampleErr.message);
       }
+      
+      // Try to get sample resources (NDJSON)
+      try {
+        const sampleResources = Assets.getText("sample-resources.ndjson");
+        if (sampleResources) {
+          sampleFiles['sample-resources.ndjson'] = sampleResources;
+          
+          const resourcesPath = path.join(resolvedPath, "sample-resources.ndjson");
+          fs.writeFileSync(resourcesPath, sampleResources, 'utf8');
+          console.log(`Created sample resources at: ${resourcesPath} (${sampleResources.length} bytes)`);
+        }
+      } catch (resourcesErr) {
+        console.log('Could not load sample resources from Assets:', resourcesErr.message);
+      }
+      
+      // List all files in the storage directory
+      const files = fs.readdirSync(resolvedPath);
+      console.log(`Files in storage directory: ${files.join(', ')}`);
       
       return {
         status: 'success',
         torrents: torrents.length,
         storagePath: resolvedPath,
-        pathExists: fs.existsSync(resolvedPath)
+        pathExists: fs.existsSync(resolvedPath),
+        filesCreated: Object.keys(sampleFiles),
+        filesInDirectory: files
       };
     } catch (err) {
       console.error('Error fixing storage path:', err);
@@ -602,6 +630,271 @@ Meteor.methods({
         status: 'error',
         error: err.message
       };
+    }
+  },
+  'debug.testFileRetrievalStrategies': async function(infoHash) {
+    check(infoHash, String);
+    
+    const fs = Npm.require('fs');
+    const path = Npm.require('path');
+    
+    console.log(`Testing file retrieval strategies for torrent ${infoHash}`);
+    
+    const results = {
+      infoHash,
+      timestamp: new Date(),
+      strategies: {}
+    };
+    
+    try {
+      // Get torrent record from database
+      const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+      if (!torrentRecord) {
+        throw new Error('Torrent not found in database');
+      }
+      
+      results.torrentInfo = {
+        name: torrentRecord.name,
+        files: torrentRecord.files || [],
+        magnetURI: torrentRecord.magnetURI
+      };
+      
+      // Strategy 1: WebTorrent getBuffer
+      results.strategies.webTorrent = { status: 'testing' };
+      try {
+        const torrent = WebTorrentServer.getTorrent(infoHash);
+        if (torrent && torrent.files && torrent.files.length > 0) {
+          const file = torrent.files[0];
+          
+          const bufferPromise = new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              reject(new Error('Timeout after 3 seconds'));
+            }, 3000);
+            
+            file.getBuffer((err, buffer) => {
+              clearTimeout(timeout);
+              if (err) reject(err);
+              else resolve(buffer.toString('utf8'));
+            });
+          });
+          
+          const content = await bufferPromise;
+          results.strategies.webTorrent = {
+            status: 'success',
+            contentLength: content.length,
+            preview: content.substring(0, 100)
+          };
+        } else {
+          results.strategies.webTorrent = {
+            status: 'failed',
+            reason: 'Torrent not found in client or has no files'
+          };
+        }
+      } catch (err) {
+        results.strategies.webTorrent = {
+          status: 'failed',
+          reason: err.message
+        };
+      }
+      
+      // Strategy 2: Direct disk access
+      results.strategies.diskAccess = { status: 'testing' };
+      try {
+        const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+        const port = process.env.PORT || 3000;
+        const resolvedPath = storagePath.replace(/\${PORT}/g, port);
+        
+        const possiblePaths = [
+          resolvedPath,
+          path.join(resolvedPath, torrentRecord.name || ''),
+          path.join(resolvedPath, infoHash)
+        ];
+        
+        let foundContent = null;
+        let foundPath = null;
+        
+        for (const basePath of possiblePaths) {
+          if (torrentRecord.files && torrentRecord.files.length > 0) {
+            const fileName = torrentRecord.files[0].name;
+            const filePath = path.join(basePath, fileName);
+            
+            if (fs.existsSync(filePath)) {
+              foundContent = fs.readFileSync(filePath, 'utf8');
+              foundPath = filePath;
+              break;
+            }
+          }
+        }
+        
+        if (foundContent) {
+          results.strategies.diskAccess = {
+            status: 'success',
+            path: foundPath,
+            contentLength: foundContent.length,
+            preview: foundContent.substring(0, 100)
+          };
+        } else {
+          results.strategies.diskAccess = {
+            status: 'failed',
+            reason: 'File not found in any expected location',
+            searchedPaths: possiblePaths
+          };
+        }
+      } catch (err) {
+        results.strategies.diskAccess = {
+          status: 'failed',
+          reason: err.message
+        };
+      }
+      
+      // Strategy 3: Assets fallback (for sample torrent)
+      results.strategies.assetsAccess = { status: 'testing' };
+      try {
+        if (torrentRecord.name === 'Sample FHIR Bundle') {
+          const sampleData = Assets.getText('sample-bundle.json');
+          if (sampleData) {
+            results.strategies.assetsAccess = {
+              status: 'success',
+              contentLength: sampleData.length,
+              preview: sampleData.substring(0, 100)
+            };
+          } else {
+            results.strategies.assetsAccess = {
+              status: 'failed',
+              reason: 'Sample bundle not found in Assets'
+            };
+          }
+        } else {
+          results.strategies.assetsAccess = {
+            status: 'skipped',
+            reason: 'Not a sample torrent'
+          };
+        }
+      } catch (err) {
+        results.strategies.assetsAccess = {
+          status: 'failed',
+          reason: err.message
+        };
+      }
+      
+      // Strategy 4: Force recreation for sample
+      results.strategies.forceRecreation = { status: 'testing' };
+      try {
+        if (torrentRecord.name === 'Sample FHIR Bundle') {
+          // Get sample data and write it to the expected location
+          const sampleData = Assets.getText('sample-bundle.json');
+          if (sampleData) {
+            const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+            const port = process.env.PORT || 3000;
+            const resolvedPath = storagePath.replace(/\${PORT}/g, port);
+            
+            const targetPath = path.join(resolvedPath, 'sample-bundle.json');
+            fs.writeFileSync(targetPath, sampleData, 'utf8');
+            
+            results.strategies.forceRecreation = {
+              status: 'success',
+              path: targetPath,
+              contentLength: sampleData.length,
+              preview: sampleData.substring(0, 100)
+            };
+          } else {
+            results.strategies.forceRecreation = {
+              status: 'failed',
+              reason: 'Could not get sample data from Assets'
+            };
+          }
+        } else {
+          results.strategies.forceRecreation = {
+            status: 'skipped',
+            reason: 'Not a sample torrent'
+          };
+        }
+      } catch (err) {
+        results.strategies.forceRecreation = {
+          status: 'failed',
+          reason: err.message
+        };
+      }
+      
+      console.log('File retrieval test completed:', results);
+      return results;
+      
+    } catch (error) {
+      console.error('Error testing file retrieval strategies:', error);
+      results.error = error.message;
+      return results;
+    }
+  },
+
+  /**
+   * Get detailed torrent and peer information
+   */
+  'debug.getDetailedTorrentInfo': async function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`Getting detailed info for torrent ${infoHash}`);
+    
+    try {
+      // Get torrent from database
+      const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+      
+      // Get torrent from WebTorrent client
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      // Storage path info
+      const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+      const port = process.env.PORT || 3000;
+      const resolvedPath = storagePath.replace(/\${PORT}/g, port);
+      
+      const result = {
+        infoHash,
+        database: {
+          exists: !!torrentRecord,
+          data: torrentRecord ? {
+            name: torrentRecord.name,
+            magnetURI: torrentRecord.magnetURI,
+            files: torrentRecord.files,
+            status: torrentRecord.status
+          } : null
+        },
+        client: {
+          exists: !!torrent,
+          data: torrent ? {
+            name: torrent.name,
+            progress: torrent.progress,
+            downloaded: torrent.downloaded,
+            uploaded: torrent.uploaded,
+            downloadSpeed: torrent.downloadSpeed,
+            uploadSpeed: torrent.uploadSpeed,
+            numPeers: torrent.numPeers,
+            ready: torrent.ready,
+            files: torrent.files.map(f => ({
+              name: f.name,
+              length: f.length,
+              path: f.path
+            })),
+            wires: torrent.wires ? torrent.wires.map(w => ({
+              peerId: w.peerId ? w.peerId.toString('hex') : 'unknown',
+              remoteAddress: w.remoteAddress,
+              downloadSpeed: w.downloadSpeed ? w.downloadSpeed() : 0,
+              uploadSpeed: w.uploadSpeed ? w.uploadSpeed() : 0
+            })) : []
+          } : null
+        },
+        storage: {
+          configPath: storagePath,
+          resolvedPath: resolvedPath,
+          port: port,
+          exists: require('fs').existsSync(resolvedPath)
+        }
+      };
+      
+      console.log('Detailed torrent info:', result);
+      return result;
+      
+    } catch (error) {
+      console.error('Error getting detailed torrent info:', error);
+      throw new Meteor.Error('info-failed', error.message);
     }
   }
 });
