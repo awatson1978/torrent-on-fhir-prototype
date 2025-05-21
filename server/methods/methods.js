@@ -394,8 +394,7 @@ Meteor.methods({
     
     try {
       // Read the sample file from private directory
-      const Assets = Package.assets.Assets;
-      const sampleBundle = Assets.getText('sample-bundle.json');
+      const sampleBundle = await Assets.getTextAsync('sample-bundle.json');
       
       if (!sampleBundle) {
         throw new Meteor.Error('sample-missing', 'Sample bundle file not found');
