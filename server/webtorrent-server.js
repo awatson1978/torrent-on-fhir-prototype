@@ -451,7 +451,7 @@ export const WebTorrentServer = {
           ])
         };
         
-        console.log(`Creating torrent with path: ${storagePath}`);
+        console.log(`Creating torrent with path: ${resolvedStoragePath}`);
         console.log('Files or path:', typeof filesOrPath === 'string' ? filesOrPath : 'Array of files');
         
         torrentClient.seed(filesOrPath, options, function(torrent) {

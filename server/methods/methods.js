@@ -585,7 +585,7 @@ Meteor.methods({
       
       try {
         // Try to get sample bundle from Assets
-        const sampleData = Assets.getText("sample-bundle.json");
+        const sampleData = await Assets.getTextAsync("sample-bundle.json");
         if (sampleData) {
           sampleFiles['sample-bundle.json'] = sampleData;
           
@@ -600,7 +600,7 @@ Meteor.methods({
       
       // Try to get sample resources (NDJSON)
       try {
-        const sampleResources = Assets.getText("sample-resources.ndjson");
+        const sampleResources = await Assets.getTextAsync("sample-resources.ndjson");
         if (sampleResources) {
           sampleFiles['sample-resources.ndjson'] = sampleResources;
           
@@ -751,7 +751,7 @@ Meteor.methods({
       results.strategies.assetsAccess = { status: 'testing' };
       try {
         if (torrentRecord.name === 'Sample FHIR Bundle') {
-          const sampleData = Assets.getText('sample-bundle.json');
+          const sampleData = await Assets.getTextAsync('sample-bundle.json');
           if (sampleData) {
             results.strategies.assetsAccess = {
               status: 'success',
@@ -782,7 +782,7 @@ Meteor.methods({
       try {
         if (torrentRecord.name === 'Sample FHIR Bundle') {
           // Get sample data and write it to the expected location
-          const sampleData = Assets.getText('sample-bundle.json');
+          const sampleData = await Assets.getTextAsync('sample-bundle.json');
           if (sampleData) {
             const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
             const port = process.env.PORT || 3000;

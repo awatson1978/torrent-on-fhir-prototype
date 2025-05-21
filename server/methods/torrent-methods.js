@@ -324,7 +324,7 @@ Meteor.methods({
       if (torrentRecord.name === 'Sample FHIR Bundle') {
         console.log('Attempting to recreate sample content');
         try {
-          const sampleData = Assets.getText('sample-bundle.json');
+          const sampleData = await Assets.getTextAsync('sample-bundle.json');
           if (sampleData) {
             console.log('Found sample bundle in assets, returning it');
             return {
