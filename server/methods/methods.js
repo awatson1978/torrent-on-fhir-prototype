@@ -18,17 +18,11 @@ Meteor.methods({
   'ping': function() {
     return `pong at ${new Date().toISOString()}`;
   },
-  
-  /**
-   * Get server environment information
-   * @return {Object} Server environment details
-   */
   'debug.getServerInfo': function() {
     return {
       meteorVersion: Meteor.release,
       nodeVersion: process.version,
       settings: {
-        // Only return safe settings - don't expose credentials
         webTorrent: Settings.getWebTorrentConfig(),
         fhir: Settings.getFhirConfig(),
         ui: Settings.getUIConfig()
@@ -36,18 +30,11 @@ Meteor.methods({
       environment: {
         nodeEnv: process.env.NODE_ENV || 'development',
         rootUrl: process.env.ROOT_URL || Meteor.absoluteUrl(),
-        // Add other safe environment variables as needed
       }
     };
   },
-  
-  /**
-   * Test database connection
-   * @return {Object} Database connection status
-   */
   'debug.testDatabase': function() {
     try {
-      // Simple query to test database connectivity
       const count = TorrentsCollection.find().count();
       return {
         connected: true,
@@ -66,7 +53,6 @@ Meteor.methods({
     const client = WebTorrentServer.getClient();
     if (!client) return { status: 'Client not initialized' };
     
-    // Log information about all loaded torrents
     const torrents = WebTorrentServer.getAllTorrents();
     console.log(`Current torrents loaded: ${torrents.length}`);
     
@@ -76,8 +62,23 @@ Meteor.methods({
       console.log(`- Progress: ${Math.round(torrent.progress * 100)}%`);
       console.log(`- Downloaded: ${torrent.downloaded} bytes`);
       
-      // Try to announce to trackers
-      torrent.announce();
+      // Safe announce using the same logic as WebTorrentServer
+      try {
+        if (typeof torrent.announce === 'function') {
+          torrent.announce();
+          console.log(`Announced torrent ${torrent.name} successfully`);
+        } else if (torrent._announce && typeof torrent._announce === 'function') {
+          torrent._announce();
+          console.log(`Used _announce for torrent ${torrent.name}`);
+        } else if (torrent.discovery && typeof torrent.discovery.announce === 'function') {
+          torrent.discovery.announce();
+          console.log(`Used discovery.announce for torrent ${torrent.name}`);
+        } else {
+          console.log(`No announce method available for torrent ${torrent.name}`);
+        }
+      } catch (announceErr) {
+        console.warn(`Error announcing torrent ${torrent.name}:`, announceErr.message);
+      }
     });
     
     return {
@@ -112,7 +113,6 @@ Meteor.methods({
     const collectionTorrents = await TorrentsCollection.find({}).fetchAsync();
     console.log(`Debug: Server has ${collectionTorrents.length} torrents in the MongoDB collection`);
     
-    // Check for mismatches
     const clientInfoHashes = torrents.map(t => t.infoHash);
     const dbInfoHashes = collectionTorrents.map(t => t.infoHash);
     
@@ -140,12 +140,10 @@ Meteor.methods({
   'debug.getServerStatus': async function() {
     console.log('Debug: Getting full server status');
     
-    // Get WebTorrent client status
     const client = WebTorrentServer.getClient();
     const clientInitialized = !!client;
     const torrents = WebTorrentServer.getAllTorrents();
     
-    // Get database status
     let dbTorrents = [];
     try {
       dbTorrents = await TorrentsCollection.find({}).fetchAsync();
@@ -153,11 +151,9 @@ Meteor.methods({
       console.error('Error fetching torrents from database:', err);
     }
     
-    // Get subscription info
     const torrentsPublication = Meteor.server.publish_handlers['torrents.all'];
     const subCount = torrentsPublication ? Object.keys(torrentsPublication._documents || {}).length : 0;
     
-    // Get tracker info
     let trackerUrls = [];
     if (client && client._trackers) {
       trackerUrls = Object.keys(client._trackers);
@@ -166,19 +162,38 @@ Meteor.methods({
       trackerUrls = config.tracker || [];
     }
     
-    // Force announce on all torrents to try to discover peers
+    // Enhanced announce with better error handling
     if (torrents.length > 0) {
       torrents.forEach(torrent => {
-        console.log(`Debug: Announcing torrent ${torrent.name} (${torrent.infoHash})`);
+        console.log(`Debug: Attempting to announce torrent ${torrent.name} (${torrent.infoHash})`);
         try {
-          torrent.announce();
+          // Use the same safe announce logic as in WebTorrentServer
+          if (typeof torrent.announce === 'function') {
+            torrent.announce();
+            console.log(`Successfully announced torrent ${torrent.name}`);
+          } else if (torrent._announce && typeof torrent._announce === 'function') {
+            torrent._announce();
+            console.log(`Used _announce for torrent ${torrent.name}`);
+          } else if (torrent.discovery && typeof torrent.discovery.announce === 'function') {
+            torrent.discovery.announce();
+            console.log(`Used discovery.announce for torrent ${torrent.name}`);
+          } else if (torrent.discovery) {
+            // Try DHT announce if available
+            if (torrent.discovery.dht && typeof torrent.discovery.dht.announce === 'function') {
+              torrent.discovery.dht.announce(torrent.infoHash);
+              console.log(`Used DHT announce for torrent ${torrent.name}`);
+            } else {
+              console.log(`No announce methods available for torrent ${torrent.name}`);
+            }
+          } else {
+            console.log(`No discovery object available for torrent ${torrent.name}`);
+          }
         } catch (e) {
-          console.error('Error announcing torrent:', e);
+          console.warn(`Error announcing torrent ${torrent.name}:`, e.message);
         }
       });
     }
     
-    // Log detailed information about client torrents vs database torrents
     console.log(`Debug: Client has ${torrents.length} torrents, database has ${dbTorrents.length} torrents`);
     
     const clientInfoHashes = torrents.map(t => t.infoHash);
@@ -218,7 +233,7 @@ Meteor.methods({
         }))
       },
       subscription: {
-        ready: true, // We can't easily check this server-side
+        ready: true,
         count: subCount
       },
       torrentsCount: torrents.length,
@@ -233,7 +248,6 @@ Meteor.methods({
       return { status: 'error', message: 'WebTorrent client not initialized' };
     }
     
-    // Get current state
     const clientTorrents = WebTorrentServer.getAllTorrents();
     const dbTorrents = await TorrentsCollection.find({}).fetchAsync();
     
@@ -242,15 +256,11 @@ Meteor.methods({
     const clientInfoHashes = clientTorrents.map(t => t.infoHash);
     const dbInfoHashes = dbTorrents.map(t => t.infoHash);
     
-    // Find torrents in db but not in client
     const toAdd = dbTorrents.filter(t => !clientInfoHashes.includes(t.infoHash));
-    
-    // Find torrents in client but not in db
     const toSave = clientTorrents.filter(t => !dbInfoHashes.includes(t.infoHash));
     
     console.log(`Debug: Need to add ${toAdd.length} torrents to client and save ${toSave.length} torrents to database`);
     
-    // Add missing torrents to client
     const addResults = [];
     for (const torrent of toAdd) {
       try {
@@ -263,7 +273,6 @@ Meteor.methods({
       }
     }
     
-    // Save client torrents to database
     const saveResults = [];
     for (const torrent of toSave) {
       try {
@@ -290,8 +299,16 @@ Meteor.methods({
       return { status: 'error', message: 'Torrent not found in client' };
     }
     
-    // Force announce to trackers
-    torrent.announce();
+    // Safe announce
+    try {
+      if (typeof torrent.announce === 'function') {
+        torrent.announce();
+      } else if (torrent.discovery && typeof torrent.discovery.announce === 'function') {
+        torrent.discovery.announce();
+      }
+    } catch (e) {
+      console.warn('Error announcing torrent:', e.message);
+    }
     
     return {
       status: 'success',
@@ -311,13 +328,9 @@ Meteor.methods({
     
     console.log(`Full torrent status check for ${infoHash}`);
     
-    // Get the torrent record from the database
     const torrentRecord = TorrentsCollection.findOne({ infoHash });
-    
-    // Get the actual torrent object from WebTorrentServer
     const torrent = WebTorrentServer.getTorrent(infoHash);
     
-    // Storage path check
     const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
     let storageExists = false;
     let storageWritable = false;
@@ -325,7 +338,6 @@ Meteor.methods({
     try {
       storageExists = fs.existsSync(storagePath);
       if (storageExists) {
-        // Test write access
         const testPath = path.join(storagePath, 'test-write-' + Date.now());
         fs.writeFileSync(testPath, 'test');
         fs.unlinkSync(testPath);
@@ -335,7 +347,6 @@ Meteor.methods({
       console.error('Storage path error:', err);
     }
     
-    // Check if any files exist for this torrent
     let filesExist = false;
     let filesInfo = [];
     
@@ -393,14 +404,12 @@ Meteor.methods({
     console.log('Creating sample torrent from bundled data');
     
     try {
-      // Read the sample file from private directory
       const sampleBundle = await Assets.getTextAsync('sample-bundle.json');
       
       if (!sampleBundle) {
         throw new Meteor.Error('sample-missing', 'Sample bundle file not found');
       }
       
-      // Create temporary directory and file
       const tempPath = path.join(Settings.get('private.storage.tempPath', '/tmp/fhir-torrents'), `sample-${Date.now()}`);
       fs.mkdirSync(tempPath, { recursive: true });
       
@@ -409,13 +418,11 @@ Meteor.methods({
       
       console.log(`Sample file written to ${filePath}`);
       
-      // Create torrent
       const result = await WebTorrentServer.createTorrent(tempPath, {
         name: 'Sample FHIR Bundle',
         comment: 'Automatically created sample torrent for testing'
       });
       
-      // Update metadata
       await TorrentsCollection.updateAsync(
         { infoHash: result.infoHash },
         { $set: { 
@@ -424,7 +431,6 @@ Meteor.methods({
         }}
       );
       
-      // Clean up temp files after a delay
       Meteor.setTimeout(function() {
         try {
           fs.unlinkSync(filePath);
@@ -450,7 +456,6 @@ Meteor.methods({
     console.log(`Testing file retrieval for torrent ${infoHash}`);
     
     try {
-      // Get the torrent from WebTorrentServer
       const torrent = WebTorrentServer.getTorrent(infoHash);
       
       if (!torrent) {
@@ -462,11 +467,8 @@ Meteor.methods({
         }
         
         await WebTorrentServer.addTorrent(torrentRecord.magnetURI);
-        
-        // Wait for torrent to initialize
         await new Promise(r => Meteor.setTimeout(r, 2000));
         
-        // Try to get the torrent again
         const reloadedTorrent = WebTorrentServer.getTorrent(infoHash);
         
         if (!reloadedTorrent) {
@@ -475,7 +477,6 @@ Meteor.methods({
         
         console.log(`Torrent reloaded, it has ${reloadedTorrent.files.length} files`);
         
-        // Test getting the first file directly
         if (reloadedTorrent.files.length > 0) {
           const file = reloadedTorrent.files[0];
           console.log(`Testing direct file retrieval for ${file.name}`);
@@ -514,7 +515,6 @@ Meteor.methods({
       } else {
         console.log(`Found torrent ${infoHash} with ${torrent.files.length} files`);
         
-        // Test getting the first file directly
         if (torrent.files.length > 0) {
           const file = torrent.files[0];
           console.log(`Testing direct file retrieval for ${file.name}`);
@@ -561,11 +561,9 @@ Meteor.methods({
       const fs = Npm.require('fs');
       const path = Npm.require('path');
       
-      // Get all torrents from database
       const torrents = await TorrentsCollection.find({}).fetchAsync();
       console.log(`Found ${torrents.length} torrents in database`);
       
-      // Get the proper storage path with PORT resolution
       const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
       const port = process.env.PORT || 3000;
       const resolvedPath = storagePath.replace(/\${PORT}/g, port);
@@ -574,22 +572,17 @@ Meteor.methods({
       console.log(`Resolved storage path: ${resolvedPath}`);
       console.log(`Port: ${port}`);
       
-      // Ensure the directory exists
       if (!fs.existsSync(resolvedPath)) {
         fs.mkdirSync(resolvedPath, { recursive: true });
         console.log(`Created storage directory: ${resolvedPath}`);
       }
       
-      // Check for sample files and create them if missing
       const sampleFiles = {};
       
       try {
-        // Try to get sample bundle from Assets
         const sampleData = await Assets.getTextAsync("sample-bundle.json");
         if (sampleData) {
           sampleFiles['sample-bundle.json'] = sampleData;
-          
-          // Write sample file to storage directory
           const samplePath = path.join(resolvedPath, "sample-bundle.json");
           fs.writeFileSync(samplePath, sampleData, 'utf8');
           console.log(`Created sample file at: ${samplePath} (${sampleData.length} bytes)`);
@@ -598,12 +591,10 @@ Meteor.methods({
         console.log('Could not load sample from Assets:', sampleErr.message);
       }
       
-      // Try to get sample resources (NDJSON)
       try {
         const sampleResources = await Assets.getTextAsync("sample-resources.ndjson");
         if (sampleResources) {
           sampleFiles['sample-resources.ndjson'] = sampleResources;
-          
           const resourcesPath = path.join(resolvedPath, "sample-resources.ndjson");
           fs.writeFileSync(resourcesPath, sampleResources, 'utf8');
           console.log(`Created sample resources at: ${resourcesPath} (${sampleResources.length} bytes)`);
@@ -612,7 +603,6 @@ Meteor.methods({
         console.log('Could not load sample resources from Assets:', resourcesErr.message);
       }
       
-      // List all files in the storage directory
       const files = fs.readdirSync(resolvedPath);
       console.log(`Files in storage directory: ${files.join(', ')}`);
       
@@ -825,10 +815,6 @@ Meteor.methods({
       return results;
     }
   },
-
-  /**
-   * Get detailed torrent and peer information
-   */
   'debug.getDetailedTorrentInfo': async function(infoHash) {
     check(infoHash, String);
     
