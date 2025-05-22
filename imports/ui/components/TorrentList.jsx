@@ -38,7 +38,7 @@ import { TorrentsCollection } from '../../api/torrents/torrents';
 
 // Format bytes to human-readable format
 function formatBytes(bytes, decimals = 2) {
-  if (bytes === 0) return '0 Bytes';
+  if (!bytes || bytes === 0) return '0 Bytes';
   
   const k = 1024;
   const dm = decimals < 0 ? 0 : decimals;
@@ -51,6 +51,7 @@ function formatBytes(bytes, decimals = 2) {
 
 // Format speed (bytes/sec) to human-readable format
 function formatSpeed(bytesPerSec) {
+  if (!bytesPerSec || bytesPerSec === 0) return '0 B/s';
   return formatBytes(bytesPerSec) + '/s';
 }
 
@@ -173,6 +174,22 @@ function TorrentList({ onSelectTorrent, onTorrentsUpdate, selectedTorrent }) {
     setTimeout(() => setSuccessMessage(''), 3000);
   }
   
+  // Direct action handlers (for icon buttons)
+  function handleDirectPause(event, infoHash, currentState) {
+    event.stopPropagation();
+    handleTogglePause(infoHash, currentState);
+  }
+  
+  function handleDirectCopy(event, magnetUri) {
+    event.stopPropagation();
+    copyMagnetUri(magnetUri);
+  }
+  
+  function handleDirectRemove(event, infoHash) {
+    event.stopPropagation();
+    handleRemoveTorrent(infoHash);
+  }
+  
   // Force refresh
   function handleRefresh() {
     Meteor.call('debug.checkTorrentConnection', function(err, result) {
@@ -258,6 +275,23 @@ function TorrentList({ onSelectTorrent, onTorrentsUpdate, selectedTorrent }) {
                 const statusInfo = getStatusInfo(torrent);
                 const isSelected = selectedTorrent?.infoHash === torrent.infoHash;
                 
+                // Fix progress calculation - handle both 0-1 and 0-100 ranges
+                let progressValue = get(torrent, 'status.progress', 0);
+                if (progressValue > 1) {
+                  progressValue = progressValue / 100; // Convert from 0-100 to 0-1 if needed
+                }
+                progressValue = Math.min(Math.max(progressValue, 0), 1); // Clamp between 0 and 1
+                
+                // Fix size - use the torrent size or calculate from files
+                let displaySize = get(torrent, 'size', 0);
+                if (!displaySize || displaySize === 0) {
+                  // Try to calculate from files
+                  const files = get(torrent, 'files', []);
+                  if (files.length > 0) {
+                    displaySize = files.reduce((total, file) => total + (file.size || 0), 0);
+                  }
+                }
+                
                 return (
                   <TableRow
                     key={torrent.infoHash}
@@ -297,7 +331,7 @@ function TorrentList({ onSelectTorrent, onTorrentsUpdate, selectedTorrent }) {
                     
                     <TableCell>
                       <Typography variant="body2">
-                        {formatBytes(torrent.size || 0)}
+                        {formatBytes(displaySize)}
                       </Typography>
                     </TableCell>
                     
@@ -306,12 +340,12 @@ function TorrentList({ onSelectTorrent, onTorrentsUpdate, selectedTorrent }) {
                         <Box sx={{ width: '100%' }}>
                           <LinearProgress 
                             variant="determinate" 
-                            value={get(torrent, 'status.progress', 0) * 100} 
+                            value={progressValue * 100} 
                             sx={{ height: 6, borderRadius: 3 }}
                           />
                         </Box>
                         <Typography variant="caption" color="text.secondary" sx={{ minWidth: 35 }}>
-                          {Math.round(get(torrent, 'status.progress', 0) * 100)}%
+                          {Math.round(progressValue * 100)}%
                         </Typography>
                       </Box>
                     </TableCell>
@@ -340,20 +374,64 @@ function TorrentList({ onSelectTorrent, onTorrentsUpdate, selectedTorrent }) {
                         </Typography>
                         {get(torrent, 'status.downloadSpeed', 0) > 0 && (
                           <Typography variant="caption" color="success.main">
-                            {formatSpeed(get(torrent, 'status.downloadSpeed', 0))}
+                            ↓{formatSpeed(get(torrent, 'status.downloadSpeed', 0))}
+                          </Typography>
+                        )}
+                        {get(torrent, 'status.uploadSpeed', 0) > 0 && (
+                          <Typography variant="caption" color="info.main">
+                            ↑{formatSpeed(get(torrent, 'status.uploadSpeed', 0))}
                           </Typography>
                         )}
                       </Box>
                     </TableCell>
                     
                     <TableCell align="right">
-                      <IconButton 
-                        size="small" 
-                        onClick={(e) => handleMenuClick(e, torrent)}
-                        sx={{ opacity: 0.7, '&:hover': { opacity: 1 } }}
-                      >
-                        <MoreVertIcon fontSize="small" />
-                      </IconButton>
+                      <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                        {/* Direct action buttons */}
+                        <Tooltip title={get(torrent, 'status.state') === 'paused' ? 'Resume' : 'Pause'}>
+                          <IconButton 
+                            size="small" 
+                            onClick={(e) => handleDirectPause(e, torrent.infoHash, get(torrent, 'status.state'))}
+                            sx={{ opacity: 0.7, '&:hover': { opacity: 1 } }}
+                          >
+                            {get(torrent, 'status.state') === 'paused' ? (
+                              <PlayArrowIcon fontSize="small" />
+                            ) : (
+                              <PauseIcon fontSize="small" />
+                            )}
+                          </IconButton>
+                        </Tooltip>
+                        
+                        <Tooltip title="Copy Magnet Link">
+                          <IconButton 
+                            size="small" 
+                            onClick={(e) => handleDirectCopy(e, torrent.magnetURI)}
+                            disabled={!torrent.magnetURI}
+                            sx={{ opacity: 0.7, '&:hover': { opacity: 1 } }}
+                          >
+                            <ContentCopyIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        
+                        <Tooltip title="Remove">
+                          <IconButton 
+                            size="small" 
+                            onClick={(e) => handleDirectRemove(e, torrent.infoHash)}
+                            sx={{ opacity: 0.7, '&:hover': { opacity: 1 }, color: 'error.main' }}
+                          >
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        
+                        {/* More options menu */}
+                        <IconButton 
+                          size="small" 
+                          onClick={(e) => handleMenuClick(e, torrent)}
+                          sx={{ opacity: 0.5, '&:hover': { opacity: 1 } }}
+                        >
+                          <MoreVertIcon fontSize="small" />
+                        </IconButton>
+                      </Box>
                     </TableCell>
                   </TableRow>
                 );
@@ -363,7 +441,7 @@ function TorrentList({ onSelectTorrent, onTorrentsUpdate, selectedTorrent }) {
         </TableContainer>
       )}
       
-      {/* Context Menu */}
+      {/* Context Menu (for additional options) */}
       <Menu
         anchorEl={anchorEl}
         open={Boolean(anchorEl)}
@@ -372,38 +450,28 @@ function TorrentList({ onSelectTorrent, onTorrentsUpdate, selectedTorrent }) {
           sx: { minWidth: 180 }
         }}
       >
-        <MenuItem 
-          onClick={() => handleTogglePause(menuTorrent?.infoHash, get(menuTorrent, 'status.state'))}
-          disabled={!menuTorrent}
-        >
-          {get(menuTorrent, 'status.state') === 'paused' ? (
-            <>
-              <PlayArrowIcon fontSize="small" sx={{ mr: 1 }} />
-              Resume
-            </>
-          ) : (
-            <>
-              <PauseIcon fontSize="small" sx={{ mr: 1 }} />
-              Pause
-            </>
-          )}
+        <MenuItem onClick={handleMenuClose} disabled>
+          <Typography variant="body2" color="text.secondary">
+            Additional Options
+          </Typography>
         </MenuItem>
         
-        <MenuItem 
-          onClick={() => copyMagnetUri(menuTorrent?.magnetURI)}
-          disabled={!menuTorrent?.magnetURI}
-        >
-          <ContentCopyIcon fontSize="small" sx={{ mr: 1 }} />
-          Copy Magnet Link
+        <MenuItem onClick={() => {
+          if (menuTorrent) {
+            console.log('Torrent details:', menuTorrent);
+          }
+          handleMenuClose();
+        }}>
+          View Details
         </MenuItem>
         
-        <MenuItem 
-          onClick={() => handleRemoveTorrent(menuTorrent?.infoHash)}
-          disabled={!menuTorrent}
-          sx={{ color: 'error.main' }}
-        >
-          <DeleteIcon fontSize="small" sx={{ mr: 1 }} />
-          Remove
+        <MenuItem onClick={() => {
+          if (menuTorrent && menuTorrent.magnetURI) {
+            console.log('Magnet URI:', menuTorrent.magnetURI);
+          }
+          handleMenuClose();
+        }}>
+          Show Magnet URI
         </MenuItem>
       </Menu>
     </Box>
