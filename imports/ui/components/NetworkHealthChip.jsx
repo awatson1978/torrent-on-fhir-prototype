@@ -17,7 +17,7 @@ function NetworkHealthChip() {
           if (err || !result) {
             setHealth({ 
               status: 'error', 
-              tooltip: 'Network check failed - server connection error' 
+              tooltip: 'Error: Network check failed - server connection error' 
             });
             return;
           }
@@ -27,22 +27,22 @@ function NetworkHealthChip() {
           if (!clientInitialized) {
             setHealth({ 
               status: 'error', 
-              tooltip: 'WebTorrent client not initialized' 
+              tooltip: 'Error: WebTorrent client not initialized' 
             });
           } else if (totalTorrents === 0) {
             setHealth({ 
               status: 'inactive', 
-              tooltip: 'No active shares - network idle' 
+              tooltip: 'Inactive: No active shares - network idle' 
             });
           } else if (totalPeers > 0) {
             setHealth({ 
               status: 'good', 
-              tooltip: `${totalPeers} peers connected across ${activeTorrents}/${totalTorrents} shares` 
+              tooltip: `Good: ${totalPeers} peers connected across ${activeTorrents}/${totalTorrents} shares` 
             });
           } else {
             setHealth({ 
               status: 'warning', 
-              tooltip: `${totalTorrents} shares active but no peers connected yet` 
+              tooltip: `Warning: ${totalTorrents} shares active but no peers connected yet` 
             });
           }
         });
