@@ -1,4 +1,4 @@
-// server/methods/torrent-methods.js - Fixed version with proper path resolution and fallback
+// server/methods/torrent-methods.js - Fixed version with proper file persistence
 
 import { Meteor } from 'meteor/meteor';
 import { check, Match } from 'meteor/check';
@@ -108,45 +108,37 @@ Meteor.methods({
     }
     
     try {
-      // Write the files to disk temporarily with resolved path
+      // Get resolved storage path
       const resolvedPath = getResolvedStoragePath();
-      const tempPath = path.join(resolvedPath, `temp-${Date.now()}`);
       
-      if (!fs.existsSync(tempPath)) {
-        fs.mkdirSync(tempPath, { recursive: true });
+      // Create a permanent directory for this torrent using the name (sanitized)
+      const sanitizedName = name.replace(/[^a-z0-9_-]/gi, '_');
+      const torrentDir = path.join(resolvedPath, `${sanitizedName}_${Date.now()}`);
+      
+      console.log(`Creating torrent directory: ${torrentDir}`);
+      
+      if (!fs.existsSync(torrentDir)) {
+        fs.mkdirSync(torrentDir, { recursive: true });
       }
       
-      const tempFiles = [];
+      // Write files directly to the torrent directory (these will be PERMANENT)
+      const torrentFiles = [];
       
       fileData.forEach(function(file) {
-        const filePath = path.join(tempPath, file.name);
-        fs.writeFileSync(filePath, file.data);
-        tempFiles.push(filePath);
+        const filePath = path.join(torrentDir, file.name);
+        fs.writeFileSync(filePath, file.data, 'utf8');
+        torrentFiles.push(filePath);
+        console.log(`Written file to permanent location: ${filePath} (${file.data.length} bytes)`);
       });
       
-      // Create the torrent with resolved path
-      const result = await WebTorrentServer.createTorrent(tempPath, {
+      // Create the torrent using the permanent directory
+      const result = await WebTorrentServer.createTorrent(torrentDir, {
         name: name,
         comment: metadata.description || '',
-        path: resolvedPath
+        path: resolvedPath  // This is where WebTorrent will look for files during seeding
       });
       
-      // Clean up temp files (after a delay to ensure the torrent is created)
-      Meteor.setTimeout(function() {
-        tempFiles.forEach(function(file) {
-          try {
-            fs.unlinkSync(file);
-          } catch (e) {
-            console.error('Error removing temp file:', e);
-          }
-        });
-        
-        try {
-          fs.rmdirSync(tempPath);
-        } catch (e) {
-          console.error('Error removing temp directory:', e);
-        }
-      }, 5000);
+      console.log(`Torrent created successfully with ${torrentFiles.length} files in permanent directory: ${torrentDir}`);
       
       // Update metadata directly
       if (Object.keys(metadata).length > 0) {
@@ -164,11 +156,15 @@ Meteor.methods({
               }
             });
             
+            // Also store the permanent directory path for future reference
+            updateObj.torrentDirectory = torrentDir;
+            
             if (Object.keys(updateObj).length > 0) {
               await TorrentsCollection.updateAsync(
                 { infoHash: result.infoHash },
                 { $set: updateObj }
               );
+              console.log(`Updated torrent metadata and stored directory path: ${torrentDir}`);
             }
           }
         } catch (err) {
@@ -179,7 +175,8 @@ Meteor.methods({
       return {
         infoHash: result.infoHash,
         name: result.name,
-        magnetURI: result.magnetURI
+        magnetURI: result.magnetURI,
+        torrentDirectory: torrentDir
       };
     } catch (error) {
       console.error('Error creating torrent:', error);
@@ -188,7 +185,7 @@ Meteor.methods({
   },
   
   /**
-   * Get all file contents from a torrent - Enhanced version with fallback mechanisms
+   * Get all file contents from a torrent - Enhanced version with improved disk fallback
    * @param {String} infoHash - Info hash of the torrent
    * @return {Object} Object with filename keys and content values
    */
@@ -210,21 +207,21 @@ Meteor.methods({
       
       let torrent = WebTorrentServer.getTorrent(infoHash);
       
-      // If torrent exists and has files, try to get them via WebTorrent first
+      // If torrent exists and has files, try to get them via WebTorrent first (but with shorter timeout)
       if (torrent && torrent.files && torrent.files.length > 0) {
         console.log(`Found torrent ${infoHash} with ${torrent.files.length} files, trying WebTorrent retrieval...`);
         
         try {
-          // Try with shorter timeout and immediate fallback
+          // Try with shorter timeout for faster fallback
           const filePromises = torrent.files.map(function(file, index) {
             return new Promise(function(resolveFile, rejectFile) {
               console.log(`Getting buffer for file: ${file.name} (${file.length} bytes)`);
               
-              // Shorter timeout for WebTorrent method
+              // Much shorter timeout for WebTorrent method - fail fast and use disk
               const timeout = Meteor.setTimeout(() => {
                 console.log(`WebTorrent timeout for ${file.name}, will try disk fallback`);
                 rejectFile(new Error(`WebTorrent timeout for ${file.name}`));
-              }, 5000); // Only wait 5 seconds
+              }, 2000); // Only wait 2 seconds
               
               file.getBuffer(function(err, buffer) {
                 clearTimeout(timeout);
@@ -265,10 +262,12 @@ Meteor.methods({
         } catch (webTorrentError) {
           console.log(`WebTorrent retrieval failed, trying disk fallback:`, webTorrentError.message);
         }
+      } else {
+        console.log(`Torrent not found in client or has no files, going straight to disk fallback`);
       }
       
-      // Fallback: Try to read files directly from disk
-      console.log(`Attempting disk fallback for torrent ${infoHash}`);
+      // Enhanced disk fallback with stored torrent directory
+      console.log(`Attempting enhanced disk fallback for torrent ${infoHash}`);
       
       const resolvedPath = getResolvedStoragePath();
       console.log(`Using storage path: ${resolvedPath}`);
@@ -280,12 +279,38 @@ Meteor.methods({
       
       const diskContents = {};
       
-      // Try different possible file locations
+      // Build list of possible paths to check, including the stored torrent directory
       const possiblePaths = [
         resolvedPath, // Base storage path
         path.join(resolvedPath, torrentRecord.name || ''), // Subfolder with torrent name
         path.join(resolvedPath, infoHash), // Subfolder with info hash
       ];
+      
+      // If we have a stored torrent directory, check that first
+      if (torrentRecord.torrentDirectory && fs.existsSync(torrentRecord.torrentDirectory)) {
+        possiblePaths.unshift(torrentRecord.torrentDirectory);
+        console.log(`Added stored torrent directory to search paths: ${torrentRecord.torrentDirectory}`);
+      }
+      
+      // Also check for any directories in the storage path that might contain our files
+      try {
+        const storageContents = fs.readdirSync(resolvedPath);
+        storageContents.forEach(item => {
+          const fullPath = path.join(resolvedPath, item);
+          if (fs.statSync(fullPath).isDirectory()) {
+            // If this directory name contains part of our torrent name or hash, check it
+            const sanitizedName = torrentRecord.name ? torrentRecord.name.replace(/[^a-z0-9_-]/gi, '_') : '';
+            if (item.includes(sanitizedName) || item.includes(infoHash)) {
+              possiblePaths.push(fullPath);
+              console.log(`Added potential torrent directory to search: ${fullPath}`);
+            }
+          }
+        });
+      } catch (dirErr) {
+        console.warn('Error reading storage directory:', dirErr);
+      }
+      
+      console.log(`Checking ${possiblePaths.length} possible paths for files`);
       
       if (torrentRecord.files && torrentRecord.files.length > 0) {
         for (const fileInfo of torrentRecord.files) {
@@ -299,7 +324,7 @@ Meteor.methods({
               if (fs.existsSync(filePath)) {
                 const content = fs.readFileSync(filePath, 'utf8');
                 diskContents[fileInfo.name] = content;
-                console.log(`Found file on disk: ${fileInfo.name} (${content.length} bytes)`);
+                console.log(`Found file on disk: ${fileInfo.name} (${content.length} bytes) at ${filePath}`);
                 found = true;
                 break;
               }
@@ -358,7 +383,31 @@ Meteor.methods({
     check(removeFiles, Boolean);
     
     try {
+      // Get torrent record to check for torrent directory before removing
+      const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+      
       const result = await WebTorrentServer.removeTorrent(infoHash, removeFiles);
+      
+      // If removeFiles is true and we have a stored torrent directory, clean it up
+      if (removeFiles && torrentRecord && torrentRecord.torrentDirectory) {
+        try {
+          if (fs.existsSync(torrentRecord.torrentDirectory)) {
+            // Remove all files in the directory
+            const files = fs.readdirSync(torrentRecord.torrentDirectory);
+            files.forEach(file => {
+              const filePath = path.join(torrentRecord.torrentDirectory, file);
+              fs.unlinkSync(filePath);
+            });
+            
+            // Remove the directory
+            fs.rmdirSync(torrentRecord.torrentDirectory);
+            console.log(`Cleaned up torrent directory: ${torrentRecord.torrentDirectory}`);
+          }
+        } catch (cleanupErr) {
+          console.error('Error cleaning up torrent directory:', cleanupErr);
+        }
+      }
+      
       return result;
     } catch (error) {
       throw new Meteor.Error('remove-failed', error.message || 'Failed to remove torrent');
@@ -504,7 +553,7 @@ Meteor.methods({
     check(infoHash, String);
     check(metadata, Object);
     
-    const allowedFields = ['description', 'fhirType', 'meta'];
+    const allowedFields = ['description', 'fhirType', 'meta', 'torrentDirectory'];
     const updateObj = {};
     
     Object.keys(metadata).forEach(function(key) {

@@ -384,29 +384,7 @@ export function App() {
           {/* Data Viewer Section (Appears on Selection) */}
           <Collapse in={!!selectedTorrent} timeout={300}>
             {selectedTorrent && (
-              <Paper sx={{ mb: 2 }}>
-                <Box sx={{ 
-                  p: 2, 
-                  borderBottom: 1, 
-                  borderColor: 'divider',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center'
-                }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Typography variant="h6" component="h3">
-                      📄 {selectedTorrent?.name || 'Selected Share'}
-                    </Typography>
-                  </Box>
-                  <IconButton 
-                    size="small" 
-                    onClick={() => setSelectedTorrent(null)}
-                    sx={{ ml: 1 }}
-                  >
-                    ✕
-                  </IconButton>
-                </Box>
-                
+              <Paper sx={{ mb: 2 }}>                
                 <DataViewer selectedTorrent={selectedTorrent} />
               </Paper>
             )}
