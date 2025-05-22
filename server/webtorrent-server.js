@@ -352,8 +352,21 @@ export const WebTorrentServer = {
         
         console.log(`Adding new torrent to client with path: ${resolvedStoragePath}`);
         
+        // Set up a timeout to prevent hanging indefinitely
+        const addTimeout = opts.timeout || 30000; // 30 seconds default
+        let timeoutHandle = null;
+        let resolved = false;
+        
         // Enhanced error handling for duplicate torrents
         let torrentAddHandler = function(torrent) {
+          if (resolved) return;
+          resolved = true;
+          
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
+          }
+          
           console.log(`Successfully added torrent: ${torrent.name} (${torrent.infoHash})`);
           
           // Store reference to the torrent
@@ -376,6 +389,41 @@ export const WebTorrentServer = {
           resolve(torrent);
         };
         
+        // Set up timeout handler
+        timeoutHandle = setTimeout(function() {
+          if (resolved) return;
+          resolved = true;
+          
+          console.log(`Torrent add timeout after ${addTimeout}ms, but torrent may still be added in background`);
+          
+          // Try to find the torrent in the client even if callback didn't fire
+          try {
+            const parsedTorrent = TorrentParser.parse(torrentId);
+            const torrent = torrentClient.get(parsedTorrent.infoHash);
+            
+            if (torrent) {
+              console.log(`Found torrent in client despite timeout: ${torrent.infoHash}`);
+              
+              // Store reference to the torrent
+              self._torrents.set(torrent.infoHash, torrent);
+              
+              // Setup event handlers
+              self._setupTorrentEvents(torrent);
+              
+              // Insert or update torrent record in collection
+              self._updateTorrentRecord(torrent);
+              
+              resolve(torrent);
+              return;
+            }
+          } catch (err) {
+            console.warn('Could not find torrent after timeout:', err.message);
+          }
+          
+          // If we can't find it, reject with timeout error
+          reject(new Error(`Torrent add timed out after ${addTimeout}ms. The torrent may still be added in the background.`));
+        }, addTimeout);
+        
         // Set up error handler for the torrent client
         let originalErrorHandler = null;
         if (torrentClient.listenerCount('error') > 0) {
@@ -384,6 +432,8 @@ export const WebTorrentServer = {
         
         let errorHandled = false;
         let tempErrorHandler = function(err) {
+          if (resolved) return;
+          
           if (!errorHandled && err.message && err.message.includes('Cannot add duplicate torrent')) {
             errorHandled = true;
             console.log('Duplicate torrent detected, trying to find existing torrent');
@@ -398,6 +448,12 @@ export const WebTorrentServer = {
               const existingTorrent = torrentClient.get(infoHash);
               if (existingTorrent) {
                 console.log(`Found existing torrent: ${existingTorrent.name}`);
+                
+                resolved = true;
+                if (timeoutHandle) {
+                  clearTimeout(timeoutHandle);
+                  timeoutHandle = null;
+                }
                 
                 // Add it to our map if not already there
                 if (!self._torrents.has(infoHash)) {
@@ -422,6 +478,11 @@ export const WebTorrentServer = {
             
             // If we can't find the existing torrent, fall back to regular error handling
             console.error('Could not find existing duplicate torrent, rejecting');
+            resolved = true;
+            if (timeoutHandle) {
+              clearTimeout(timeoutHandle);
+              timeoutHandle = null;
+            }
             torrentClient.removeListener('error', tempErrorHandler);
             reject(err);
           } else {
@@ -437,8 +498,42 @@ export const WebTorrentServer = {
         
         // Try to add the torrent
         try {
-          torrentClient.add(torrentId, options, torrentAddHandler);
+          // Use the torrent object's events instead of just the callback
+          const torrent = torrentClient.add(torrentId, options);
+          
+          // If torrent is returned immediately (synchronously), handle it
+          if (torrent && torrent.infoHash) {
+            console.log(`Torrent added synchronously: ${torrent.infoHash}`);
+            
+            // Set up listeners for when it's ready
+            torrent.on('ready', function() {
+              torrentAddHandler(torrent);
+            });
+            
+            // Also try the callback approach
+            torrent.on('metadata', function() {
+              torrentAddHandler(torrent);
+            });
+            
+            // If torrent is already ready, fire handler immediately
+            if (torrent.ready) {
+              torrentAddHandler(torrent);
+            }
+            
+          } else {
+            // If no torrent returned, wait for callback with timeout
+            torrentClient.add(torrentId, options, torrentAddHandler);
+          }
+          
         } catch (addError) {
+          if (resolved) return;
+          resolved = true;
+          
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
+          }
+          
           // Remove our error handler on immediate failure
           torrentClient.removeListener('error', tempErrorHandler);
           

@@ -185,10 +185,10 @@ Meteor.methods({
     console.log('Adding torrent from magnet URI:', magnetUri);
     
     try {
-      // Safer way to check for existing torrent without using parse-torrent
+      // Check for existing torrent first
       let existingTorrent = null;
       
-      // Instead of trying to parse the magnetUri, try to extract the infoHash directly
+      // Extract infoHash from magnet URI
       const infoHashMatch = magnetUri.match(/xt=urn:btih:([a-zA-Z0-9]+)/);
       if (infoHashMatch && infoHashMatch[1]) {
         const infoHash = infoHashMatch[1].toLowerCase();
@@ -202,28 +202,95 @@ Meteor.methods({
             magnetURI: existingTorrent.magnetURI
           };
         }
-      }
-      
-      // Pass resolved storage path
-      const resolvedPath = getResolvedStoragePath();
-      const result = await WebTorrentServer.addTorrent(magnetUri, {
-        path: resolvedPath
-      });
-      
-      // Update metadata
-      if (Object.keys(metadata).length > 0) {
-        try {
-          await Meteor.callAsync('torrents.updateMeta', result.infoHash, metadata);
-        } catch (metaError) {
-          console.error('Error updating metadata:', metaError);
+        
+        // Also check database for existing record
+        const existingRecord = await TorrentsCollection.findOneAsync({ infoHash });
+        if (existingRecord) {
+          console.log(`Torrent ${infoHash} found in database, reloading to client`);
+          // Don't wait for the callback - just start the add process
+          WebTorrentServer.addTorrent(magnetUri, {
+            path: getResolvedStoragePath()
+          }).catch(function(err) {
+            console.error('Background torrent add failed:', err);
+          });
+          
+          return {
+            infoHash: existingRecord.infoHash,
+            name: existingRecord.name,
+            magnetURI: existingRecord.magnetURI
+          };
         }
       }
       
-      return {
-        infoHash: result.infoHash,
-        name: result.name,
-        magnetURI: result.magnetURI
+      // Get resolved storage path
+      const resolvedPath = getResolvedStoragePath();
+      
+      // Create a torrent record immediately with basic info extracted from magnet URI
+      const nameMatch = magnetUri.match(/dn=([^&]+)/);
+      const torrentName = nameMatch ? decodeURIComponent(nameMatch[1].replace(/\+/g, ' ')) : 'Unnamed Torrent';
+      
+      const infoHash = infoHashMatch ? infoHashMatch[1].toLowerCase() : null;
+      
+      if (!infoHash) {
+        throw new Meteor.Error('invalid-magnet', 'Could not extract info hash from magnet URI');
+      }
+      
+      // Create database record immediately
+      const torrentData = {
+        infoHash: infoHash,
+        name: torrentName,
+        magnetURI: magnetUri,
+        size: 0, // Will be updated when metadata arrives
+        files: [],
+        created: new Date(),
+        description: metadata.description || '',
+        fhirType: metadata.fhirType || 'unknown',
+        meta: metadata.meta || {
+          fhirVersion: '',
+          resourceCount: 0,
+          profile: ''
+        },
+        status: {
+          downloaded: 0,
+          uploaded: 0,
+          downloadSpeed: 0,
+          uploadSpeed: 0,
+          progress: 0,
+          peers: 0,
+          seeds: 0,
+          state: 'downloading'
+        }
       };
+      
+      console.log(`Creating immediate database record for torrent ${infoHash}`);
+      await TorrentsCollection.insertAsync(torrentData);
+      
+      // Start adding to WebTorrent client in background (don't wait for callback)
+      console.log(`Starting background WebTorrent add for ${infoHash}`);
+      WebTorrentServer.addTorrent(magnetUri, {
+        path: resolvedPath
+      }).then(function(torrent) {
+        console.log(`Background torrent add completed for ${torrent.name} (${torrent.infoHash})`);
+        // The _updateTorrentRecord will be called by the event handlers
+      }).catch(function(err) {
+        console.error(`Background torrent add failed for ${infoHash}:`, err);
+        // Update the database record to reflect the error
+        TorrentsCollection.updateAsync(
+          { infoHash },
+          { $set: { 'status.state': 'error', 'status.error': err.message } }
+        ).catch(function(updateErr) {
+          console.error('Error updating torrent status to error:', updateErr);
+        });
+      });
+      
+      // Return immediately with the basic info
+      console.log(`Returning immediate response for torrent ${infoHash}`);
+      return {
+        infoHash: infoHash,
+        name: torrentName,
+        magnetURI: magnetUri
+      };
+      
     } catch (error) {
       console.error('Error adding torrent:', error);
       throw new Meteor.Error('add-failed', error.message || 'Failed to add torrent');
@@ -723,5 +790,109 @@ Meteor.methods({
       { infoHash }, 
       { $set: { meta: fhirMeta } }
     );
+  },
+
+  /**
+   * Get status of a specific torrent
+   * @param {String} infoHash - Info hash of the torrent
+   * @return {Object} Torrent status information
+   */
+  'torrents.getStatus': async function(infoHash) {
+    check(infoHash, String);
+    
+    try {
+      // Get from database
+      const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+      
+      if (!torrentRecord) {
+        throw new Meteor.Error('not-found', 'Torrent not found in database');
+      }
+      
+      // Get from WebTorrent client
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      const status = {
+        infoHash: infoHash,
+        name: torrentRecord.name,
+        found: {
+          database: !!torrentRecord,
+          client: !!torrent
+        },
+        progress: 0,
+        downloadSpeed: 0,
+        uploadSpeed: 0,
+        peers: 0,
+        state: 'unknown',
+        ready: false,
+        hasFiles: false,
+        filesCount: 0
+      };
+      
+      if (torrent) {
+        status.progress = torrent.progress || 0;
+        status.downloadSpeed = torrent.downloadSpeed || 0;
+        status.uploadSpeed = torrent.uploadSpeed || 0;
+        status.peers = torrent.numPeers || 0;
+        status.ready = torrent.ready || false;
+        status.hasFiles = torrent.files && torrent.files.length > 0;
+        status.filesCount = torrent.files ? torrent.files.length : 0;
+        status.state = torrent.done ? 'seeding' : 
+                       torrent.paused ? 'paused' : 'downloading';
+      } else if (torrentRecord.status) {
+        // Use database status if client not available
+        status.progress = torrentRecord.status.progress || 0;
+        status.downloadSpeed = torrentRecord.status.downloadSpeed || 0;
+        status.uploadSpeed = torrentRecord.status.uploadSpeed || 0;
+        status.peers = torrentRecord.status.peers || 0;
+        status.state = torrentRecord.status.state || 'unknown';
+      }
+      
+      return status;
+      
+    } catch (error) {
+      console.error(`Error getting torrent status for ${infoHash}:`, error);
+      throw new Meteor.Error(
+        error.error || 'error', 
+        error.reason || error.message || 'Failed to get torrent status'
+      );
+    }
+  },
+
+  /**
+   * Force announce a torrent to trackers (for troubleshooting)
+   * @param {String} infoHash - Info hash of the torrent
+   * @return {Boolean} Success
+   */
+  'torrents.announce': function(infoHash) {
+    check(infoHash, String);
+    
+    const torrent = WebTorrentServer.getTorrent(infoHash);
+    
+    if (!torrent) {
+      throw new Meteor.Error('not-found', 'Torrent not found in client');
+    }
+    
+    try {
+      // Use the same safe announce logic as in the WebTorrent server
+      if (typeof torrent.announce === 'function') {
+        torrent.announce();
+        console.log(`Manually announced torrent ${torrent.name}`);
+      } else if (torrent._announce && typeof torrent._announce === 'function') {
+        torrent._announce();
+        console.log(`Used _announce for torrent ${torrent.name}`);
+      } else if (torrent.discovery && typeof torrent.discovery.announce === 'function') {
+        torrent.discovery.announce();
+        console.log(`Used discovery.announce for torrent ${torrent.name}`);
+      } else {
+        console.log(`No announce method available for torrent ${torrent.name}`);
+        return false;
+      }
+      
+      return true;
+    } catch (err) {
+      console.error(`Error announcing torrent ${infoHash}:`, err);
+      throw new Meteor.Error('announce-failed', err.message);
+    }
   }
+
 });
