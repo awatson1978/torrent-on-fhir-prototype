@@ -16,6 +16,161 @@ function getResolvedStoragePath() {
   return storagePath.replace(/\$\{PORT\}/g, port);
 }
 
+/**
+ * Helper function to get file contents from disk
+ * @param {String} infoHash - Info hash of the torrent
+ * @param {Object} torrentRecord - Torrent record from database
+ * @return {Object} Object with filename keys and content values
+ */
+async function getDiskFallbackContents(infoHash, torrentRecord) {
+  console.log(`Attempting disk fallback for torrent ${infoHash}`);
+  
+  const resolvedPath = getResolvedStoragePath();
+  console.log(`Using storage path: ${resolvedPath}`);
+  
+  if (!fs.existsSync(resolvedPath)) {
+    console.log(`Storage path does not exist: ${resolvedPath}`);
+    throw new Meteor.Error('storage-missing', 'Storage directory does not exist');
+  }
+  
+  const diskContents = {};
+  
+  // Build list of possible paths to check
+  const possiblePaths = [
+    resolvedPath, // Base storage path
+  ];
+  
+  // Add stored torrent directory if available
+  if (torrentRecord.torrentDirectory && fs.existsSync(torrentRecord.torrentDirectory)) {
+    possiblePaths.unshift(torrentRecord.torrentDirectory);
+    console.log(`Added stored torrent directory to search paths: ${torrentRecord.torrentDirectory}`);
+  }
+  
+  // Add various directory patterns
+  if (torrentRecord.name) {
+    const sanitizedName = torrentRecord.name.replace(/[^a-z0-9_-]/gi, '_');
+    possiblePaths.push(path.join(resolvedPath, sanitizedName));
+    possiblePaths.push(path.join(resolvedPath, torrentRecord.name));
+  }
+  
+  possiblePaths.push(path.join(resolvedPath, infoHash));
+  
+  // Search for directories that might contain our files
+  try {
+    const storageContents = fs.readdirSync(resolvedPath);
+    storageContents.forEach(item => {
+      const fullPath = path.join(resolvedPath, item);
+      if (fs.statSync(fullPath).isDirectory()) {
+        const sanitizedName = torrentRecord.name ? torrentRecord.name.replace(/[^a-z0-9_-]/gi, '_') : '';
+        if (item.includes(sanitizedName) || item.includes(infoHash) || item.includes('bundle') || item.includes('test')) {
+          possiblePaths.push(fullPath);
+          console.log(`Added potential torrent directory to search: ${fullPath}`);
+        }
+      }
+    });
+  } catch (dirErr) {
+    console.warn('Error reading storage directory:', dirErr);
+  }
+  
+  console.log(`Checking ${possiblePaths.length} possible paths for files`);
+  
+  // Look for files
+  if (torrentRecord.files && torrentRecord.files.length > 0) {
+    for (const fileInfo of torrentRecord.files) {
+      let found = false;
+      
+      for (const basePath of possiblePaths) {
+        // Try the exact filename
+        let filePath = path.join(basePath, fileInfo.name);
+        console.log(`Checking for file: ${filePath}`);
+        
+        try {
+          if (fs.existsSync(filePath)) {
+            const content = fs.readFileSync(filePath, 'utf8');
+            diskContents[fileInfo.name] = content;
+            console.log(`Found file on disk: ${fileInfo.name} (${content.length} bytes) at ${filePath}`);
+            found = true;
+            break;
+          }
+        } catch (readErr) {
+          console.error(`Error reading file ${filePath}:`, readErr.message);
+        }
+        
+        // Also try looking for the file directly in the base path (in case path differs)
+        if (fileInfo.path && fileInfo.path !== fileInfo.name) {
+          filePath = path.join(basePath, fileInfo.path);
+          console.log(`Checking alternative path: ${filePath}`);
+          
+          try {
+            if (fs.existsSync(filePath)) {
+              const content = fs.readFileSync(filePath, 'utf8');
+              diskContents[fileInfo.name] = content;
+              console.log(`Found file on disk at alternative path: ${fileInfo.name} (${content.length} bytes) at ${filePath}`);
+              found = true;
+              break;
+            }
+          } catch (readErr) {
+            console.error(`Error reading file ${filePath}:`, readErr.message);
+          }
+        }
+      }
+      
+      if (!found) {
+        console.log(`File not found on disk: ${fileInfo.name}`);
+      }
+    }
+  } else {
+    // If no file info in database, try to find any JSON files
+    console.log('No file info in database, searching for any JSON/NDJSON files');
+    
+    for (const basePath of possiblePaths) {
+      try {
+        if (fs.existsSync(basePath)) {
+          const files = fs.readdirSync(basePath);
+          const jsonFiles = files.filter(f => f.endsWith('.json') || f.endsWith('.ndjson'));
+          
+          for (const jsonFile of jsonFiles) {
+            const filePath = path.join(basePath, jsonFile);
+            try {
+              const content = fs.readFileSync(filePath, 'utf8');
+              diskContents[jsonFile] = content;
+              console.log(`Found JSON file on disk: ${jsonFile} (${content.length} bytes) at ${filePath}`);
+            } catch (readErr) {
+              console.error(`Error reading JSON file ${filePath}:`, readErr.message);
+            }
+          }
+        }
+      } catch (dirErr) {
+        // Directory doesn't exist or can't be read, continue
+      }
+    }
+  }
+  
+  // If we found files on disk, return them
+  if (Object.keys(diskContents).length > 0) {
+    console.log(`Found ${Object.keys(diskContents).length} files on disk`);
+    return diskContents;
+  }
+  
+  // Last resort: Try to create sample content if this appears to be a sample torrent
+  if (torrentRecord.name && (torrentRecord.name.toLowerCase().includes('sample') || torrentRecord.name.toLowerCase().includes('test'))) {
+    console.log('Attempting to provide sample content for test/sample torrent');
+    try {
+      const sampleData = await Assets.getTextAsync('sample-bundle.json');
+      if (sampleData) {
+        console.log('Found sample bundle in assets, returning it');
+        return {
+          [torrentRecord.name.endsWith('.json') ? torrentRecord.name : torrentRecord.name + '.json']: sampleData
+        };
+      }
+    } catch (assetErr) {
+      console.error('Error reading sample bundle from assets:', assetErr);
+    }
+  }
+  
+  throw new Meteor.Error('no-content', `Could not retrieve file contents for torrent ${infoHash}. The torrent may still be downloading or the files may not be available yet.`);
+}
+
 Meteor.methods({
   /**
    * Add a torrent from a magnet URI
@@ -207,161 +362,134 @@ Meteor.methods({
       
       let torrent = WebTorrentServer.getTorrent(infoHash);
       
-      // If torrent exists and has files, try to get them via WebTorrent first (but with shorter timeout)
-      if (torrent && torrent.files && torrent.files.length > 0) {
-        console.log(`Found torrent ${infoHash} with ${torrent.files.length} files, trying WebTorrent retrieval...`);
+      // If torrent not found in our map, try to get it from the WebTorrent client directly
+      if (!torrent) {
+        console.log(`Torrent ${infoHash} not found in _torrents map, checking WebTorrent client directly`);
         
-        try {
-          // Try with shorter timeout for faster fallback
-          const filePromises = torrent.files.map(function(file, index) {
-            return new Promise(function(resolveFile, rejectFile) {
-              console.log(`Getting buffer for file: ${file.name} (${file.length} bytes)`);
+        const torrentClient = WebTorrentServer.getClient();
+        if (torrentClient) {
+          const clientTorrent = torrentClient.get(infoHash);
+          if (clientTorrent) {
+            console.log(`Found torrent ${infoHash} in WebTorrent client, adding to our map`);
+            WebTorrentServer._torrents.set(infoHash, clientTorrent);
+            WebTorrentServer._setupTorrentEvents(clientTorrent);
+            torrent = clientTorrent;
+          }
+        }
+        
+        // If still not found, try to reload from database
+        if (!torrent) {
+          try {
+            console.log(`Reloading torrent ${infoHash} from magnet URI`);
+            const reloadedTorrent = await WebTorrentServer.addTorrent(torrentRecord.magnetURI, {
+              path: getResolvedStoragePath()
+            });
+            console.log(`Reloaded torrent with info hash ${reloadedTorrent.infoHash}`);
+            torrent = reloadedTorrent;
+          } catch (err) {
+            console.error('Error reloading torrent:', err);
+            throw new Meteor.Error('not-found', 'Torrent not found and could not be reloaded');
+          }
+        }
+      }
+      
+      console.log(`Found torrent ${infoHash} with ${torrent.files.length} files`);
+      
+      // Check if torrent is ready and has files
+      if (!torrent.ready || torrent.files.length === 0) {
+        console.log(`Torrent ${infoHash} not ready or has no files yet, waiting for metadata...`);
+        
+        // Wait for the torrent to be ready and have metadata
+        const maxWaitTime = 10000; // 10 seconds
+        const startTime = Date.now();
+        
+        while ((!torrent.ready || torrent.files.length === 0) && (Date.now() - startTime) < maxWaitTime) {
+          await new Promise(resolve => Meteor.setTimeout(resolve, 500));
+          console.log(`Waiting for torrent metadata... Ready: ${torrent.ready}, Files: ${torrent.files.length}`);
+        }
+        
+        if (!torrent.ready || torrent.files.length === 0) {
+          console.log(`Torrent ${infoHash} still not ready after waiting, attempting disk fallback`);
+          return await getDiskFallbackContents(infoHash, torrentRecord);
+        }
+      }
+      
+      // Check if files are downloaded (progress > 0 or done)
+      if (torrent.progress === 0 && !torrent.done) {
+        console.log(`Torrent ${infoHash} has no download progress yet, waiting for some content...`);
+        
+        // Wait a bit for some download progress
+        const maxDownloadWait = 5000; // 5 seconds
+        const startTime = Date.now();
+        
+        while (torrent.progress === 0 && !torrent.done && (Date.now() - startTime) < maxDownloadWait) {
+          await new Promise(resolve => Meteor.setTimeout(resolve, 1000));
+          console.log(`Waiting for download progress... Progress: ${torrent.progress * 100}%`);
+        }
+        
+        // If still no progress, try disk fallback
+        if (torrent.progress === 0 && !torrent.done) {
+          console.log(`No download progress after waiting, attempting disk fallback`);
+          return await getDiskFallbackContents(infoHash, torrentRecord);
+        }
+      }
+      
+      // Try to get files via WebTorrent with shorter timeout for faster fallback
+      console.log(`Attempting to get files via WebTorrent for torrent ${infoHash}`);
+      
+      try {
+        const filePromises = torrent.files.map(function(file, index) {
+          return new Promise(function(resolveFile, rejectFile) {
+            console.log(`Getting buffer for file: ${file.name} (${file.length} bytes)`);
+            
+            // Shorter timeout for faster fallback
+            const timeout = Meteor.setTimeout(() => {
+              console.log(`WebTorrent timeout for ${file.name}, will try disk fallback`);
+              rejectFile(new Error(`WebTorrent timeout for ${file.name}`));
+            }, 3000); // 3 seconds timeout
+            
+            file.getBuffer(function(err, buffer) {
+              clearTimeout(timeout);
               
-              // Much shorter timeout for WebTorrent method - fail fast and use disk
-              const timeout = Meteor.setTimeout(() => {
-                console.log(`WebTorrent timeout for ${file.name}, will try disk fallback`);
-                rejectFile(new Error(`WebTorrent timeout for ${file.name}`));
-              }, 2000); // Only wait 2 seconds
-              
-              file.getBuffer(function(err, buffer) {
-                clearTimeout(timeout);
-                
-                if (err) {
-                  console.log(`WebTorrent error for ${file.name}:`, err.message);
-                  rejectFile(err);
-                } else {
-                  try {
-                    const content = buffer.toString('utf8');
-                    console.log(`WebTorrent success for ${file.name}, length: ${content.length}`);
-                    resolveFile({ name: file.name, content });
-                  } catch (e) {
-                    console.error(`Buffer conversion error for ${file.name}:`, e);
-                    rejectFile(e);
-                  }
+              if (err) {
+                console.log(`WebTorrent error for ${file.name}:`, err.message);
+                rejectFile(err);
+              } else {
+                try {
+                  const content = buffer.toString('utf8');
+                  console.log(`WebTorrent success for ${file.name}, length: ${content.length}`);
+                  resolveFile({ name: file.name, content });
+                } catch (e) {
+                  console.error(`Buffer conversion error for ${file.name}:`, e);
+                  rejectFile(e);
                 }
-              });
+              }
             });
           });
-          
-          const results = await Promise.allSettled(filePromises);
-          const webTorrentContents = {};
-          
-          results.forEach(result => {
-            if (result.status === 'fulfilled') {
-              webTorrentContents[result.value.name] = result.value.content;
-            }
-          });
-          
-          // If we got all files via WebTorrent, return them
-          if (Object.keys(webTorrentContents).length === torrent.files.length) {
-            console.log(`Successfully retrieved all ${torrent.files.length} files via WebTorrent`);
-            return webTorrentContents;
-          } else {
-            console.log(`Only got ${Object.keys(webTorrentContents).length}/${torrent.files.length} files via WebTorrent, trying disk fallback`);
-          }
-        } catch (webTorrentError) {
-          console.log(`WebTorrent retrieval failed, trying disk fallback:`, webTorrentError.message);
-        }
-      } else {
-        console.log(`Torrent not found in client or has no files, going straight to disk fallback`);
-      }
-      
-      // Enhanced disk fallback with stored torrent directory
-      console.log(`Attempting enhanced disk fallback for torrent ${infoHash}`);
-      
-      const resolvedPath = getResolvedStoragePath();
-      console.log(`Using storage path: ${resolvedPath}`);
-      
-      if (!fs.existsSync(resolvedPath)) {
-        console.log(`Storage path does not exist: ${resolvedPath}`);
-        throw new Meteor.Error('storage-missing', 'Storage directory does not exist');
-      }
-      
-      const diskContents = {};
-      
-      // Build list of possible paths to check, including the stored torrent directory
-      const possiblePaths = [
-        resolvedPath, // Base storage path
-        path.join(resolvedPath, torrentRecord.name || ''), // Subfolder with torrent name
-        path.join(resolvedPath, infoHash), // Subfolder with info hash
-      ];
-      
-      // If we have a stored torrent directory, check that first
-      if (torrentRecord.torrentDirectory && fs.existsSync(torrentRecord.torrentDirectory)) {
-        possiblePaths.unshift(torrentRecord.torrentDirectory);
-        console.log(`Added stored torrent directory to search paths: ${torrentRecord.torrentDirectory}`);
-      }
-      
-      // Also check for any directories in the storage path that might contain our files
-      try {
-        const storageContents = fs.readdirSync(resolvedPath);
-        storageContents.forEach(item => {
-          const fullPath = path.join(resolvedPath, item);
-          if (fs.statSync(fullPath).isDirectory()) {
-            // If this directory name contains part of our torrent name or hash, check it
-            const sanitizedName = torrentRecord.name ? torrentRecord.name.replace(/[^a-z0-9_-]/gi, '_') : '';
-            if (item.includes(sanitizedName) || item.includes(infoHash)) {
-              possiblePaths.push(fullPath);
-              console.log(`Added potential torrent directory to search: ${fullPath}`);
-            }
+        });
+        
+        const results = await Promise.allSettled(filePromises);
+        const webTorrentContents = {};
+        
+        results.forEach(result => {
+          if (result.status === 'fulfilled') {
+            webTorrentContents[result.value.name] = result.value.content;
           }
         });
-      } catch (dirErr) {
-        console.warn('Error reading storage directory:', dirErr);
-      }
-      
-      console.log(`Checking ${possiblePaths.length} possible paths for files`);
-      
-      if (torrentRecord.files && torrentRecord.files.length > 0) {
-        for (const fileInfo of torrentRecord.files) {
-          let found = false;
-          
-          for (const basePath of possiblePaths) {
-            const filePath = path.join(basePath, fileInfo.name);
-            console.log(`Checking for file: ${filePath}`);
-            
-            try {
-              if (fs.existsSync(filePath)) {
-                const content = fs.readFileSync(filePath, 'utf8');
-                diskContents[fileInfo.name] = content;
-                console.log(`Found file on disk: ${fileInfo.name} (${content.length} bytes) at ${filePath}`);
-                found = true;
-                break;
-              }
-            } catch (readErr) {
-              console.error(`Error reading file ${filePath}:`, readErr.message);
-            }
-          }
-          
-          if (!found) {
-            console.log(`File not found on disk: ${fileInfo.name}`);
-          }
+        
+        // If we got all files via WebTorrent, return them
+        if (Object.keys(webTorrentContents).length === torrent.files.length) {
+          console.log(`Successfully retrieved all ${torrent.files.length} files via WebTorrent`);
+          return webTorrentContents;
+        } else {
+          console.log(`Only got ${Object.keys(webTorrentContents).length}/${torrent.files.length} files via WebTorrent, trying disk fallback`);
         }
+      } catch (webTorrentError) {
+        console.log(`WebTorrent retrieval failed, trying disk fallback:`, webTorrentError.message);
       }
       
-      // If we found files on disk, return them
-      if (Object.keys(diskContents).length > 0) {
-        console.log(`Found ${Object.keys(diskContents).length} files on disk`);
-        return diskContents;
-      }
-      
-      // Last resort: Try to create sample content if this is the sample torrent
-      if (torrentRecord.name === 'Sample FHIR Bundle') {
-        console.log('Attempting to recreate sample content');
-        try {
-          const sampleData = await Assets.getTextAsync('sample-bundle.json');
-          if (sampleData) {
-            console.log('Found sample bundle in assets, returning it');
-            return {
-              'sample-bundle.json': sampleData
-            };
-          }
-        } catch (assetErr) {
-          console.error('Error reading sample bundle from assets:', assetErr);
-        }
-      }
-      
-      throw new Meteor.Error('no-content', 'Could not retrieve file contents via WebTorrent, disk, or assets');
+      // Fall back to disk
+      return await getDiskFallbackContents(infoHash, torrentRecord);
       
     } catch (error) {
       console.error(`Error getting file contents for torrent ${infoHash}:`, error);
