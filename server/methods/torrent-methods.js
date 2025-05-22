@@ -140,13 +140,156 @@ function waitForTorrentMetadata(torrent, timeoutMs = 30000) {
 }
 
 /**
- * Helper function to get file contents from disk
- * @param {String} infoHash - Info hash of the torrent
- * @param {Object} torrentRecord - Torrent record from database
- * @return {Object} Object with filename keys and content values
+ * Enhanced file content retrieval with immediate read attempts
+ * @param {Object} torrent - WebTorrent torrent object
+ * @param {Number} timeoutMs - Timeout for each file
+ * @return {Promise<Object>} Object with filename keys and content values
+ */
+function getFileContentsAggressively(torrent, timeoutMs = 15000) {
+  return new Promise(function(resolve, reject) {
+    console.log(`🚀 Aggressively retrieving files from torrent ${torrent.infoHash}`);
+    
+    if (!torrent.files || torrent.files.length === 0) {
+      return reject(new Error('No files available in torrent'));
+    }
+    
+    // Force download start before attempting to read
+    forceDownloadStart(torrent);
+    
+    const results = {};
+    const filePromises = torrent.files.map(function(file, index) {
+      return new Promise(function(resolveFile, rejectFile) {
+        console.log(`📁 Processing file ${index}: ${file.name} (${file.length} bytes)`);
+        
+        let attempts = 0;
+        const maxAttempts = 3;
+        
+        function attemptRead() {
+          attempts++;
+          console.log(`📖 Reading attempt ${attempts}/${maxAttempts} for ${file.name}`);
+          
+          const readTimeout = Meteor.setTimeout(function() {
+            console.log(`⏰ Read timeout for ${file.name} on attempt ${attempts}`);
+            
+            if (attempts < maxAttempts) {
+              console.log(`🔄 Retrying read for ${file.name} (attempt ${attempts + 1})`);
+              Meteor.setTimeout(attemptRead, 2000); // Wait 2 seconds before retry
+            } else {
+              console.log(`❌ All read attempts failed for ${file.name}`);
+              rejectFile(new Error(`Failed to read ${file.name} after ${maxAttempts} attempts`));
+            }
+          }, timeoutMs / maxAttempts);
+          
+          // Try multiple read strategies
+          function tryStrategyA() {
+            console.log(`Strategy A: getBuffer for ${file.name}`);
+            file.getBuffer(function(err, buffer) {
+              clearTimeout(readTimeout);
+              
+              if (err) {
+                console.log(`Strategy A failed for ${file.name}:`, err.message);
+                tryStrategyB();
+              } else {
+                try {
+                  const content = buffer.toString('utf8');
+                  console.log(`✅ Strategy A success for ${file.name}: ${content.length} chars`);
+                  resolveFile({ name: file.name, content });
+                } catch (convertErr) {
+                  console.log(`Strategy A buffer conversion failed for ${file.name}:`, convertErr.message);
+                  tryStrategyB();
+                }
+              }
+            });
+          }
+          
+          function tryStrategyB() {
+            console.log(`Strategy B: createReadStream for ${file.name}`);
+            try {
+              const chunks = [];
+              const stream = file.createReadStream();
+              
+              stream.on('data', function(chunk) {
+                chunks.push(chunk);
+              });
+              
+              stream.on('end', function() {
+                clearTimeout(readTimeout);
+                try {
+                  const content = Buffer.concat(chunks).toString('utf8');
+                  console.log(`✅ Strategy B success for ${file.name}: ${content.length} chars`);
+                  resolveFile({ name: file.name, content });
+                } catch (convertErr) {
+                  console.log(`Strategy B failed for ${file.name}:`, convertErr.message);
+                  if (attempts < maxAttempts) {
+                    Meteor.setTimeout(attemptRead, 2000);
+                  } else {
+                    rejectFile(convertErr);
+                  }
+                }
+              });
+              
+              stream.on('error', function(streamErr) {
+                clearTimeout(readTimeout);
+                console.log(`Strategy B stream error for ${file.name}:`, streamErr.message);
+                if (attempts < maxAttempts) {
+                  Meteor.setTimeout(attemptRead, 2000);
+                } else {
+                  rejectFile(streamErr);
+                }
+              });
+              
+            } catch (streamErr) {
+              clearTimeout(readTimeout);
+              console.log(`Strategy B setup failed for ${file.name}:`, streamErr.message);
+              if (attempts < maxAttempts) {
+                Meteor.setTimeout(attemptRead, 2000);
+              } else {
+                rejectFile(streamErr);
+              }
+            }
+          }
+          
+          // Start with Strategy A
+          tryStrategyA();
+        }
+        
+        // Start the first attempt immediately
+        attemptRead();
+      });
+    });
+    
+    // Wait for all files or timeout
+    Promise.allSettled(filePromises).then(function(results) {
+      const successfulFiles = {};
+      const failedFiles = [];
+      
+      results.forEach(function(result) {
+        if (result.status === 'fulfilled') {
+          const fileData = result.value;
+          successfulFiles[fileData.name] = fileData.content;
+        } else {
+          failedFiles.push(result.reason.message);
+        }
+      });
+      
+      console.log(`📊 File retrieval results: ${Object.keys(successfulFiles).length} success, ${failedFiles.length} failed`);
+      
+      if (Object.keys(successfulFiles).length > 0) {
+        console.log('✅ At least some files retrieved successfully');
+        resolve(successfulFiles);
+      } else {
+        console.log('❌ No files could be retrieved');
+        reject(new Error('Could not retrieve any files: ' + failedFiles.join(', ')));
+      }
+    });
+  });
+}
+
+/**
+ * Enhanced helper function to get file contents from disk with better search
  */
 async function getDiskFallbackContents(infoHash, torrentRecord) {
-  console.log(`Attempting disk fallback for torrent ${infoHash}`);
+  console.log(`💾 Attempting enhanced disk fallback for torrent ${infoHash}`);
   
   const resolvedPath = getResolvedStoragePath();
   console.log(`Using storage path: ${resolvedPath}`);
@@ -158,30 +301,31 @@ async function getDiskFallbackContents(infoHash, torrentRecord) {
   
   const diskContents = {};
   
-  // Build list of possible paths to check
-  const possiblePaths = [
-    resolvedPath, // Base storage path
-  ];
+  // Build comprehensive list of search paths
+  const possiblePaths = [resolvedPath];
   
   // Add stored torrent directory if available
   if (torrentRecord.torrentDirectory && fs.existsSync(torrentRecord.torrentDirectory)) {
     possiblePaths.unshift(torrentRecord.torrentDirectory);
-    console.log(`Added stored torrent directory to search paths: ${torrentRecord.torrentDirectory}`);
+    console.log(`Using stored torrent directory: ${torrentRecord.torrentDirectory}`);
   }
   
-  // Add various directory patterns
+  // Add name-based patterns
   if (torrentRecord.name) {
     const sanitizedName = torrentRecord.name.replace(/[^a-z0-9_-]/gi, '_');
     possiblePaths.push(path.join(resolvedPath, sanitizedName));
     possiblePaths.push(path.join(resolvedPath, torrentRecord.name));
   }
   
+  // Add hash-based patterns
   possiblePaths.push(path.join(resolvedPath, infoHash));
   possiblePaths.push(path.join(resolvedPath, infoHash.substring(0, 8)));
   
-// Search for directories that might contain our files using more comprehensive patterns
+  // Search for any directories that might contain our files
   try {
     const storageContents = fs.readdirSync(resolvedPath);
+    console.log(`Found ${storageContents.length} items in storage directory`);
+    
     storageContents.forEach(function(item) {
       const fullPath = path.join(resolvedPath, item);
       try {
@@ -190,44 +334,41 @@ async function getDiskFallbackContents(infoHash, torrentRecord) {
           const nameLower = (torrentRecord.name || '').toLowerCase();
           const hashSubstring = infoHash.substring(0, 8);
           
-          // More sophisticated matching
           if (itemLower.includes(hashSubstring) || 
               (nameLower && itemLower.includes(nameLower.replace(/[^a-z0-9]/g, ''))) ||
               itemLower.includes('fhir') || 
               itemLower.includes('bundle') || 
               itemLower.includes('ndjson') ||
-              item.match(/_\d{13}$/)) { // Timestamp pattern
+              item.match(/_\d{13}$/)) {
             possiblePaths.push(fullPath);
-            console.log(`Added potential torrent directory to search: ${fullPath}`);
+            console.log(`Added potential directory: ${fullPath}`);
           }
         }
       } catch (statErr) {
-        // Ignore stat errors and continue
+        // Ignore stat errors
       }
     });
   } catch (dirErr) {
     console.warn('Error reading storage directory:', dirErr);
   }
   
-  console.log(`Checking ${possiblePaths.length} possible paths for files`);
+  console.log(`Searching ${possiblePaths.length} possible paths for files`);
   
-// Enhanced file search with better pattern matching
-  const searchForFiles = function(searchPaths, targetFiles) {
-    for (const basePath of searchPaths) {
-      console.log(`Searching in path: ${basePath}`);
+  // Enhanced file search
+  for (const searchPath of possiblePaths) {
+    console.log(`🔍 Searching in: ${searchPath}`);
+    
+    try {
+      if (!fs.existsSync(searchPath)) continue;
       
       // If we have specific file info, look for those files
-      if (targetFiles && targetFiles.length > 0) {
-        for (const fileInfo of targetFiles) {
-          let found = false;
-          
-          // Try multiple variations of the file path
+      if (torrentRecord.files && torrentRecord.files.length > 0) {
+        for (const fileInfo of torrentRecord.files) {
           const possibleFilePaths = [
-            path.join(basePath, fileInfo.name),
-            path.join(basePath, fileInfo.path || fileInfo.name),
-            // Try without directory structure
-            path.join(basePath, path.basename(fileInfo.name)),
-            path.join(basePath, path.basename(fileInfo.path || fileInfo.name))
+            path.join(searchPath, fileInfo.name),
+            path.join(searchPath, fileInfo.path || fileInfo.name),
+            path.join(searchPath, path.basename(fileInfo.name)),
+            path.join(searchPath, path.basename(fileInfo.path || fileInfo.name))
           ];
           
           for (const filePath of possibleFilePaths) {
@@ -235,88 +376,212 @@ async function getDiskFallbackContents(infoHash, torrentRecord) {
               if (fs.existsSync(filePath)) {
                 const content = fs.readFileSync(filePath, 'utf8');
                 diskContents[fileInfo.name] = content;
-                console.log(`Found file on disk: ${fileInfo.name} (${content.length} bytes) at ${filePath}`);
-                found = true;
+                console.log(`✅ Found on disk: ${fileInfo.name} (${content.length} bytes) at ${filePath}`);
                 break;
               }
             } catch (readErr) {
-              console.error(`Error reading file ${filePath}:`, readErr.message);
+              console.error(`Error reading ${filePath}:`, readErr.message);
             }
-          }
-          
-          if (!found) {
-            console.log(`File not found: ${fileInfo.name}`);
           }
         }
       } else {
-        // No specific file info, search for any FHIR-related files
-        try {
-          if (fs.existsSync(basePath)) {
-            const files = fs.readdirSync(basePath);
-            const dataFiles = files.filter(function(f) {
-              const ext = path.extname(f).toLowerCase();
-              const name = f.toLowerCase();
-              return ext === '.json' || ext === '.ndjson' || 
-                     name.includes('fhir') || name.includes('bundle') || 
-                     name.includes('resource') || name.includes('patient');
-            });
-            
-            for (const dataFile of dataFiles) {
-              const filePath = path.join(basePath, dataFile);
-              try {
-                const content = fs.readFileSync(filePath, 'utf8');
-                diskContents[dataFile] = content;
-                console.log(`Found data file on disk: ${dataFile} (${content.length} bytes) at ${filePath}`);
-              } catch (readErr) {
-                console.error(`Error reading data file ${filePath}:`, readErr.message);
-              }
-            }
+        // Search for any FHIR files
+        const files = fs.readdirSync(searchPath);
+        const dataFiles = files.filter(function(f) {
+          const ext = path.extname(f).toLowerCase();
+          const name = f.toLowerCase();
+          return ext === '.json' || ext === '.ndjson' || 
+                 name.includes('fhir') || name.includes('bundle') || 
+                 name.includes('resource') || name.includes('patient');
+        });
+        
+        for (const dataFile of dataFiles) {
+          const filePath = path.join(searchPath, dataFile);
+          try {
+            const content = fs.readFileSync(filePath, 'utf8');
+            diskContents[dataFile] = content;
+            console.log(`✅ Found data file: ${dataFile} (${content.length} bytes)`);
+          } catch (readErr) {
+            console.error(`Error reading ${filePath}:`, readErr.message);
           }
-        } catch (dirErr) {
-          // Directory doesn't exist or can't be read, continue
         }
       }
+    } catch (searchErr) {
+      console.warn(`Error searching in ${searchPath}:`, searchErr.message);
     }
-  };
-  searchForFiles(possiblePaths, torrentRecord.files);
-
-  // If we found files on disk, return them
+  }
+  
   if (Object.keys(diskContents).length > 0) {
-    console.log(`Found ${Object.keys(diskContents).length} files on disk`);
+    console.log(`💾 Found ${Object.keys(diskContents).length} files on disk`);
     return diskContents;
   }
   
-  // If no files found and this appears to be a sample torrent, provide sample content
+  // Sample fallback for test torrents
   if (torrentRecord.name && (
     torrentRecord.name.toLowerCase().includes('sample') || 
     torrentRecord.name.toLowerCase().includes('test') ||
     torrentRecord.name.toLowerCase().includes('demo')
   )) {
-    console.log('Attempting to provide sample content for test/sample torrent');
+    console.log('Attempting sample content fallback');
     try {
       const sampleData = await Assets.getTextAsync('sample-bundle.json');
       if (sampleData) {
-        console.log('Found sample bundle in assets, returning it');
         const fileName = torrentRecord.name.endsWith('.json') ? torrentRecord.name : torrentRecord.name + '.json';
         return { [fileName]: sampleData };
       }
     } catch (assetErr) {
-      console.error('Error reading sample bundle from assets:', assetErr);
-    }
-    
-    try {
-      const sampleResources = await Assets.getTextAsync('sample-resources.ndjson');
-      if (sampleResources) {
-        console.log('Found sample resources in assets, returning them');
-        const fileName = torrentRecord.name.endsWith('.ndjson') ? torrentRecord.name : torrentRecord.name + '.ndjson';
-        return { [fileName]: sampleResources };
-      }
-    } catch (assetErr) {
-      console.error('Error reading sample resources from assets:', assetErr);
+      console.error('Error reading sample bundle:', assetErr);
     }
   }
   
-  throw new Meteor.Error('no-content', `Could not retrieve file contents for torrent ${infoHash}. The torrent may still be downloading, or the files may not be available yet. Try waiting a few more minutes for the download to complete.`);
+  throw new Meteor.Error('no-content', 
+    `Could not retrieve file contents for torrent ${infoHash}. ` +
+    `The torrent may still be downloading, or the files may not be available yet. ` +
+    `Try waiting a few more minutes for the download to complete.`
+  );
+}
+
+/**
+ * Force download initiation for a torrent
+ * @param {Object} torrent - WebTorrent torrent object
+ * @return {Promise<Boolean>} True if download was triggered successfully
+ */
+function forceDownloadStart(torrent) {
+  return new Promise(function(resolve) {
+    console.log(`🔧 Force triggering download for torrent ${torrent.infoHash}`);
+    
+    try {
+      // 1. Resume if paused
+      if (torrent.paused) {
+        console.log('Resuming paused torrent');
+        torrent.resume();
+      }
+      
+      // 2. Select all files with high priority
+      if (torrent.files && torrent.files.length > 0) {
+        console.log(`Selecting all ${torrent.files.length} files with high priority`);
+        torrent.files.forEach(function(file, index) {
+          try {
+            if (typeof file.select === 'function') {
+              file.select(0, file.length, 1); // Select entire file with high priority
+              console.log(`Selected file ${index}: ${file.name}`);
+            }
+          } catch (selectErr) {
+            console.warn(`Error selecting file ${file.name}:`, selectErr.message);
+          }
+        });
+      }
+      
+      // 3. Try to manually request specific pieces
+      try {
+        if (typeof torrent.select === 'function') {
+          // Request first few pieces with high priority
+          const pieceLength = torrent.pieceLength || 16384; // Default piece size
+          const totalLength = torrent.length || 0;
+          const piecesToRequest = Math.min(10, Math.ceil(totalLength / pieceLength));
+          
+          console.log(`Requesting first ${piecesToRequest} pieces manually`);
+          for (let i = 0; i < piecesToRequest; i++) {
+            torrent.select(i * pieceLength, Math.min((i + 1) * pieceLength, totalLength), 1);
+          }
+        }
+      } catch (pieceErr) {
+        console.warn('Error requesting pieces:', pieceErr.message);
+      }
+      
+      // 4. Force announce to get more peers
+      try {
+        if (typeof torrent.announce === 'function') {
+          torrent.announce();
+          console.log('Forced announce to trackers');
+        } else if (torrent.discovery && typeof torrent.discovery.announce === 'function') {
+          torrent.discovery.announce();
+          console.log('Used discovery announce');
+        }
+      } catch (announceErr) {
+        console.warn('Error announcing:', announceErr.message);
+      }
+      
+      // 5. Set up download event listeners to monitor progress
+      const onDownload = function() {
+        console.log(`📥 Download progress: ${Math.round(torrent.progress * 100)}%`);
+      };
+      
+      const onPiece = function(index) {
+        console.log(`📦 Received piece ${index}, progress: ${Math.round(torrent.progress * 100)}%`);
+      };
+      
+      torrent.on('download', onDownload);
+      torrent.on('piece', onPiece);
+      
+      // Clean up listeners after 60 seconds
+      Meteor.setTimeout(function() {
+        torrent.removeListener('download', onDownload);
+        torrent.removeListener('piece', onPiece);
+      }, 60000);
+      
+      console.log('✅ Download triggers applied successfully');
+      resolve(true);
+      
+    } catch (err) {
+      console.error('Error in forceDownloadStart:', err);
+      resolve(false);
+    }
+  });
+}
+
+/**
+ * Wait for torrent download with aggressive triggering
+ * @param {Object} torrent - WebTorrent torrent object
+ * @param {Number} timeoutMs - Timeout in milliseconds
+ * @return {Promise<Boolean>} True if some content was downloaded
+ */
+function waitForDownloadProgress(torrent, timeoutMs = 45000) {
+  return new Promise(function(resolve) {
+    const startTime = Date.now();
+    const initialProgress = torrent.progress;
+    
+    console.log(`⏳ Waiting for download progress, initial: ${Math.round(initialProgress * 100)}%`);
+    
+    // If already has some progress, resolve immediately
+    if (initialProgress > 0) {
+      console.log('Already has download progress');
+      return resolve(true);
+    }
+    
+    // Force download start
+    forceDownloadStart(torrent);
+    
+    let progressDetected = false;
+    
+    const checkInterval = Meteor.setInterval(function() {
+      const elapsed = Date.now() - startTime;
+      const currentProgress = torrent.progress;
+      
+      console.log(`⏳ Check: progress=${Math.round(currentProgress * 100)}%, peers=${torrent.numPeers}, elapsed=${elapsed}ms`);
+      
+      // Success condition - any progress or content
+      if (currentProgress > initialProgress || torrent.downloaded > 0) {
+        console.log(`✅ Download progress detected: ${Math.round(currentProgress * 100)}%`);
+        progressDetected = true;
+        Meteor.clearInterval(checkInterval);
+        return resolve(true);
+      }
+      
+      // Re-trigger download every 10 seconds
+      if (elapsed % 10000 < 2000 && !progressDetected) {
+        console.log('Re-triggering download...');
+        forceDownloadStart(torrent);
+      }
+      
+      // Timeout condition
+      if (elapsed >= timeoutMs) {
+        console.log(`⏰ Download wait timeout after ${elapsed}ms`);
+        Meteor.clearInterval(checkInterval);
+        return resolve(false);
+      }
+    }, 2000);
+  });
 }
 
 
@@ -591,177 +856,105 @@ Meteor.methods({
   'torrents.getAllFileContents': async function(infoHash) {
     check(infoHash, String);
     
-    console.log(`Received request for all file contents of torrent: ${infoHash}`);
+    console.log(`🎯 ENHANCED: Received request for all file contents of torrent: ${infoHash}`);
     
     try {
-      // Check if the torrent exists in the database first
+      // Get torrent record
       const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
-      
       if (!torrentRecord) {
-        console.error(`Torrent ${infoHash} not found in database`);
         throw new Meteor.Error('not-found', 'Torrent not found in database');
       }
       
-      console.log(`Found torrent in database: ${torrentRecord.name}, checking WebTorrent client`);
+      console.log(`📋 Found torrent in database: ${torrentRecord.name}`);
       
+      // Get torrent from WebTorrent
       let torrent = WebTorrentServer.getTorrent(infoHash);
       
-      // If torrent not found in our map, try to get it from the WebTorrent client directly
+      // Try to find or reload torrent
       if (!torrent) {
-        console.log(`Torrent ${infoHash} not found in _torrents map, checking WebTorrent client directly`);
+        console.log(`🔄 Torrent not in memory, checking WebTorrent client`);
         
         const torrentClient = WebTorrentServer.getClient();
         if (torrentClient) {
-          const clientTorrent = torrentClient.get(infoHash);
-          if (clientTorrent) {
-            console.log(`Found torrent ${infoHash} in WebTorrent client, adding to our map`);
-            WebTorrentServer._torrents.set(infoHash, clientTorrent);
-            WebTorrentServer._setupTorrentEvents(clientTorrent);
-            torrent = clientTorrent;
+          torrent = torrentClient.get(infoHash);
+          if (torrent) {
+            console.log(`✅ Found torrent in WebTorrent client, adding to memory`);
+            WebTorrentServer._torrents.set(infoHash, torrent);
+            WebTorrentServer._setupTorrentEvents(torrent);
           }
         }
         
-        // If still not found, try to reload from database
-        if (!torrent) {
+        // If still not found, reload from magnet URI
+        if (!torrent && torrentRecord.magnetURI) {
+          console.log(`🔄 Reloading torrent from magnet URI`);
           try {
-            console.log(`Reloading torrent ${infoHash} from magnet URI`);
-            const reloadedTorrent = await WebTorrentServer.addTorrent(torrentRecord.magnetURI, {
+            torrent = await WebTorrentServer.addTorrent(torrentRecord.magnetURI, {
               path: getResolvedStoragePath(),
-              timeout: 45000
+              timeout: 30000
             });
-            console.log(`Reloaded torrent with info hash ${reloadedTorrent.infoHash}`);
-            torrent = reloadedTorrent;
-          } catch (err) {
-            console.error('Error reloading torrent:', err);
-            throw new Meteor.Error('not-found', 'Torrent not found and could not be reloaded');
+            console.log(`✅ Torrent reloaded successfully`);
+          } catch (reloadErr) {
+            console.error('Failed to reload torrent:', reloadErr);
+            throw new Meteor.Error('reload-failed', 'Could not reload torrent');
           }
         }
       }
       
-      console.log(`Found torrent ${infoHash} with ${torrent.files ? torrent.files.length : 0} files, ready: ${torrent.ready}, peers: ${torrent.numPeers}, progress: ${Math.round(torrent.progress * 100)}%`);
+      if (!torrent) {
+        console.log(`❌ Could not get torrent instance, trying disk fallback`);
+        return await getDiskFallbackContents(infoHash, torrentRecord);
+      }
       
-      // Enhanced metadata waiting with retry logic
-      if (!torrent.ready || !torrent.files || torrent.files.length === 0) {
-        console.log(`Torrent ${infoHash} not ready or has no files yet, using enhanced waiting...`);
+      console.log(`📊 Torrent status: files=${torrent.files?.length || 0}, ready=${torrent.ready}, peers=${torrent.numPeers}, progress=${Math.round(torrent.progress * 100)}%`);
+      
+      // If no files yet, wait for metadata
+      if (!torrent.files || torrent.files.length === 0) {
+        console.log(`⏳ Waiting for torrent metadata...`);
         
-        try {
-          const metadataReceived = await waitForTorrentMetadata(torrent, 30000);
-          
-          if (!metadataReceived) {
-            console.log(`Enhanced metadata wait failed, attempting disk fallback for ${infoHash}`);
-            return await getDiskFallbackContents(infoHash, torrentRecord);
-          }
-        } catch (metadataErr) {
-          console.error('Error in enhanced metadata waiting:', metadataErr);
+        const maxWait = 30000;
+        const startTime = Date.now();
+        
+        while ((!torrent.files || torrent.files.length === 0) && (Date.now() - startTime) < maxWait) {
+          await new Promise(resolve => Meteor.setTimeout(resolve, 1000));
+          console.log(`⏳ Still waiting for metadata... (${Date.now() - startTime}ms)`);
+        }
+        
+        if (!torrent.files || torrent.files.length === 0) {
+          console.log(`❌ No metadata received, trying disk fallback`);
           return await getDiskFallbackContents(infoHash, torrentRecord);
         }
       }
       
-      // Check if files are available for reading
-      if (torrent.progress === 0 && !torrent.done && torrent.files.length > 0) {
-        console.log(`Torrent ${infoHash} has files but no download progress, waiting briefly for some content...`);
-        
-        // Wait a bit for some download progress or try to trigger download
-        const maxDownloadWait = 10000; // 10 seconds
-        const startTime = Date.now();
-        
-        // Try to select all files to ensure they're being downloaded
-        try {
-          torrent.files.forEach(function(file, index) {
-            if (typeof file.select === 'function') {
-              file.select();
-            }
-          });
-        } catch (selectErr) {
-          console.warn('Error selecting files:', selectErr);
-        }
-        
-        while (torrent.progress === 0 && !torrent.done && (Date.now() - startTime) < maxDownloadWait) {
-          await new Promise(resolve => Meteor.setTimeout(resolve, 1000));
-          console.log(`Waiting for download progress... Progress: ${Math.round(torrent.progress * 100)}%, Peers: ${torrent.numPeers}`);
-        }
-        
-        // If still no progress but we have metadata, try to read anyway (might work for small files)
-        if (torrent.progress === 0 && !torrent.done && torrent.files.length > 0) {
-          console.log(`No download progress but have metadata, will try reading and fall back to disk if needed`);
-        }
-      }
+      console.log(`✅ Torrent has ${torrent.files.length} files, attempting enhanced retrieval`);
       
-      // Try to get files via WebTorrent with shorter timeout for faster fallback
-      console.log(`Attempting to get files via WebTorrent for torrent ${infoHash} (${torrent.files.length} files)`);
-      
+      // Try aggressive WebTorrent retrieval first
       try {
-        const filePromises = torrent.files.map(function(file, index) {
-          return new Promise(function(resolveFile, rejectFile) {
-            console.log(`Getting buffer for file: ${file.name} (${file.length} bytes)`);
-            
-            // Shorter timeout for faster fallback
-            const timeout = Meteor.setTimeout(() => {
-              console.log(`WebTorrent timeout for ${file.name}, will try disk fallback`);
-              rejectFile(new Error(`WebTorrent timeout for ${file.name}`));
-            }, 5000); // 5 seconds timeout
-            
-            file.getBuffer(function(err, buffer) {
-              clearTimeout(timeout);
-              
-              if (err) {
-                console.log(`WebTorrent error for ${file.name}:`, err.message);
-                rejectFile(err);
-              } else {
-                try {
-                  const content = buffer.toString('utf8');
-                  console.log(`WebTorrent success for ${file.name}, length: ${content.length}`);
-                  resolveFile({ name: file.name, content });
-                } catch (e) {
-                  console.error(`Buffer conversion error for ${file.name}:`, e);
-                  rejectFile(e);
-                }
-              }
-            });
-          });
-        });
+        console.log(`🚀 Attempting aggressive WebTorrent retrieval`);
         
-        const results = await Promise.allSettled(filePromises);
-        const webTorrentContents = {};
-        
-        results.forEach(function(result) {
-          if (result.status === 'fulfilled') {
-            webTorrentContents[result.value.name] = result.value.content;
-          }
-        });
-        
-        // If we got all files via WebTorrent, return them
-        if (Object.keys(webTorrentContents).length === torrent.files.length) {
-          console.log(`Successfully retrieved all ${torrent.files.length} files via WebTorrent`);
-          return webTorrentContents;
-        } else {
-          console.log(`Only got ${Object.keys(webTorrentContents).length}/${torrent.files.length} files via WebTorrent, trying disk fallback`);
+        // Wait for some download progress if needed
+        if (torrent.progress === 0 && !torrent.done) {
+          console.log(`⏳ Waiting for download to start...`);
+          await waitForDownloadProgress(torrent, 30000);
         }
         
-        // If we got some files, combine with disk fallback for missing files
+        // Attempt to get files with aggressive strategies
+        const webTorrentContents = await getFileContentsAggressively(torrent, 20000);
+        
         if (Object.keys(webTorrentContents).length > 0) {
-          try {
-            const diskContents = await getDiskFallbackContents(infoHash, torrentRecord);
-            // Merge WebTorrent and disk contents, preferring WebTorrent
-            const combinedContents = { ...diskContents, ...webTorrentContents };
-            console.log(`Combined WebTorrent and disk contents: ${Object.keys(combinedContents).length} files total`);
-            return combinedContents;
-          } catch (diskErr) {
-            // If disk fallback fails but we have some WebTorrent content, return what we have
-            console.log(`Disk fallback failed, returning partial WebTorrent content`);
-            return webTorrentContents;
-          }
+          console.log(`✅ Successfully retrieved ${Object.keys(webTorrentContents).length} files via WebTorrent`);
+          return webTorrentContents;
         }
         
-      } catch (webTorrentError) {
-        console.log(`WebTorrent retrieval failed, trying disk fallback:`, webTorrentError.message);
+      } catch (webTorrentErr) {
+        console.log(`⚠️ WebTorrent retrieval failed: ${webTorrentErr.message}`);
       }
       
       // Fall back to disk
+      console.log(`💾 Falling back to disk retrieval`);
       return await getDiskFallbackContents(infoHash, torrentRecord);
       
     } catch (error) {
-      console.error(`Error getting file contents for torrent ${infoHash}:`, error);
+      console.error(`❌ Error getting file contents for torrent ${infoHash}:`, error);
       throw new Meteor.Error(
         error.error || 'error', 
         error.reason || error.message || 'Unknown error'
