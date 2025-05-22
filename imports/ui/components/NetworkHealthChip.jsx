@@ -7,7 +7,7 @@ import CircleIcon from '@mui/icons-material/Circle';
 
 
 function NetworkHealthChip() {
-  const [health, setHealth] = useState({ status: 'unknown', tooltip: 'Checking...' });
+  const [health, setHealth] = useState({ status: 'unknown', tooltip: 'Unknown: Checking network settings...' });
   
 
 
@@ -36,8 +36,8 @@ function NetworkHealthChip() {
             });
           } else if (totalPeers > 0) {
             setHealth({ 
-              status: 'good', 
-              tooltip: `Good: ${totalPeers} peers connected across ${activeTorrents}/${totalTorrents} shares` 
+              status: 'success', 
+              tooltip: `Success: ${totalPeers} peers connected across ${activeTorrents}/${totalTorrents} shares` 
             });
           } else {
             setHealth({ 
@@ -60,7 +60,6 @@ function NetworkHealthChip() {
   
   const statusConfig = {
     success: { color: 'success', icon: <CircleIcon sx={{ fontSize: 12 }} /> },
-    good: { color: 'good', icon: <CircleIcon sx={{ fontSize: 12 }} /> },
     inactive: { color: 'inactive', icon: <CircleIcon sx={{ fontSize: 12 }} /> },
     warning: { color: 'warning', icon: <CircleIcon sx={{ fontSize: 12 }} /> },
     error: { color: 'error', icon: <CircleIcon sx={{ fontSize: 12 }} /> },

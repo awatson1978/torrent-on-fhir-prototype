@@ -1,3 +1,5 @@
+// imports/ui/components/DataViewer.jsx - Updated with enhanced metadata debugging
+
 import React, { useState, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
 import Paper from '@mui/material/Paper';
@@ -9,9 +11,19 @@ import Alert from '@mui/material/Alert';
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
 import Button from '@mui/material/Button';
+import Card from '@mui/material/Card';
+import CardContent from '@mui/material/CardContent';
+import CardActions from '@mui/material/CardActions';
+import Collapse from '@mui/material/Collapse';
+import IconButton from '@mui/material/IconButton';
+import Chip from '@mui/material/Chip';
 import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import BugReportIcon from '@mui/icons-material/BugReport';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 
-import MetadataDebugPanel from './MetadataDebugPanel';
+import EnhancedMetadataDebugPanel from './EnhancedMetadataDebugPanel';
 
 function TabPanel(props) {
   const { children, value, index, ...other } = props;
@@ -38,13 +50,30 @@ function DataViewer({ selectedTorrent }) {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
   const [error, setError] = useState('');
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
+  const [autoFixAttempted, setAutoFixAttempted] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
   
   // Fetch file contents when torrent is selected
   useEffect(function() {
     if (!selectedTorrent) {
       setFileContents({});
+      setError('');
+      setAutoFixAttempted(false);
+      setRetryCount(0);
       return;
     }
+    
+    // Reset state for new torrent
+    setError('');
+    setAutoFixAttempted(false);
+    setRetryCount(0);
+    
+    fetchFileContents();
+  }, [selectedTorrent]);
+  
+  function fetchFileContents() {
+    if (!selectedTorrent) return;
     
     setLoading(true);
     setError('');
@@ -56,29 +85,40 @@ function DataViewer({ selectedTorrent }) {
       
       if (err) {
         console.error("Error fetching file contents:", err);
-        // More detailed error message
-        const errorDetails = err.details ? `\nDetails: ${err.details}` : '';
-        const errorCode = err.error ? `\nCode: ${err.error}` : '';
-        setError(`Error loading files: ${err.message || err.reason || 'Unknown error'}${errorCode}${errorDetails}`);
         
-        // Try to get server status in case of error
-        Meteor.call('debug.getServerStatus', function(statusErr, statusResult) {
-          if (!statusErr && statusResult) {
-            console.log('Server status:', statusResult);
-          }
-        });
+        // Check if this is a metadata-related error
+        const isMetadataError = err.message && (
+          err.message.includes('metadata') ||
+          err.message.includes('files not available') ||
+          err.message.includes('still downloading') ||
+          err.error === 'no-content'
+        );
+        
+        if (isMetadataError && !autoFixAttempted) {
+          setError(`⚠️ Metadata Issue Detected: ${err.message || err.reason || 'Unknown error'}`);
+          setShowDebugPanel(true);
+        } else {
+          // Regular error or auto-fix already attempted
+          const errorDetails = err.details ? `\nDetails: ${err.details}` : '';
+          const errorCode = err.error ? `\nCode: ${err.error}` : '';
+          setError(`Error loading files: ${err.message || err.reason || 'Unknown error'}${errorCode}${errorDetails}`);
+        }
+        
       } else {
         if (result && Object.keys(result).length > 0) {
           console.log(`Received ${Object.keys(result).length} files from server`);
           setFileContents(result);
           setActiveTab(0); // Reset to first tab when new content loads
+          setError(''); // Clear any previous errors
+          setShowDebugPanel(false); // Hide debug panel on success
         } else {
           console.log(`Received empty result for torrent ${selectedTorrent.infoHash}`);
-          setError('No files found or files are still downloading');
+          setError('No files found or files are still downloading - this may be a metadata exchange issue');
+          setShowDebugPanel(true);
         }
       }
     });
-  }, [selectedTorrent]);
+  }
   
   // Handle tab change
   function handleTabChange(event, newValue) {
@@ -96,6 +136,39 @@ function DataViewer({ selectedTorrent }) {
     document.body.removeChild(element);
   }
   
+  // Try auto-fix with enhanced metadata exchange
+  function handleAutoFix() {
+    setAutoFixAttempted(true);
+    setLoading(true);
+    
+    Meteor.call('torrents.forceMetadataExchange', selectedTorrent.infoHash, function(err, result) {
+      if (err) {
+        console.error('Auto-fix error:', err);
+        setError(`Auto-fix failed: ${err.message}`);
+        setLoading(false);
+      } else {
+        console.log('Auto-fix result:', result);
+        
+        if (result.success) {
+          // Wait a moment then retry fetching files
+          setTimeout(function() {
+            setRetryCount(prev => prev + 1);
+            fetchFileContents();
+          }, 2000);
+        } else {
+          setLoading(false);
+          setError('Auto-fix completed but metadata exchange was not successful. Use the debug panel for advanced troubleshooting.');
+        }
+      }
+    });
+  }
+  
+  // Retry fetching files
+  function handleRetry() {
+    setRetryCount(prev => prev + 1);
+    fetchFileContents();
+  }
+  
   // If no torrent is selected
   if (!selectedTorrent) {
     return (
@@ -108,30 +181,131 @@ function DataViewer({ selectedTorrent }) {
   }
   
   const filenames = Object.keys(fileContents);
+  const hasMetadataError = error && (
+    error.includes('metadata') || 
+    error.includes('not available') || 
+    error.includes('still downloading')
+  );
   
   return (
     <Box sx={{ width: '100%' }}>
+      
+      {/* Error Handling with Smart Auto-Fix */}
       {error && (
-        <Alert severity="error" sx={{ m: 2 }}>
+        <Alert 
+          severity={hasMetadataError ? "warning" : "error"} 
+          sx={{ m: 2 }}
+          action={
+            hasMetadataError && !autoFixAttempted ? (
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                <Button 
+                  color="inherit" 
+                  size="small" 
+                  startIcon={<AutoFixHighIcon />}
+                  onClick={handleAutoFix}
+                  disabled={loading}
+                >
+                  Auto-Fix
+                </Button>
+                <IconButton
+                  color="inherit"
+                  size="small"
+                  onClick={() => setShowDebugPanel(!showDebugPanel)}
+                >
+                  <BugReportIcon />
+                </IconButton>
+              </Box>
+            ) : (
+              <Button 
+                color="inherit" 
+                size="small" 
+                onClick={handleRetry}
+                disabled={loading}
+              >
+                Retry
+              </Button>
+            )
+          }
+        >
           {error}
+          {hasMetadataError && !autoFixAttempted && (
+            <Box sx={{ mt: 1 }}>
+              <Typography variant="body2">
+                💡 This appears to be a metadata exchange issue. Try the Auto-Fix button or use the debug panel for detailed troubleshooting.
+              </Typography>
+            </Box>
+          )}
         </Alert>
       )}
       
-      {loading ? (
-        <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
-          <CircularProgress />
-          <Typography variant="body2" color="text.secondary" sx={{ ml: 2 }}>
-            Loading file contents...
-          </Typography>
-        </Box>
-      ) : filenames.length === 0 ? (
-        <Box sx={{ p: 2 }}>
-          <Alert severity="info">
-            No files found in this torrent or files are still downloading.
-          </Alert>
-        </Box>
-      ) : (
+      {/* Enhanced Debug Panel */}
+      <Collapse in={showDebugPanel} timeout={300}>
+        <EnhancedMetadataDebugPanel 
+          torrentHash={selectedTorrent.infoHash} 
+          torrentName={selectedTorrent.name}
+        />
+      </Collapse>
+      
+      {/* Loading State */}
+      {loading && (
+        <Card sx={{ m: 2 }}>
+          <CardContent>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <CircularProgress size={24} />
+              <Box>
+                <Typography variant="body1">
+                  {autoFixAttempted ? 'Applying metadata exchange fix...' : 'Loading file contents...'}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {autoFixAttempted ? 'This may take up to 2 minutes for the first load' : 'Please wait while we retrieve the data'}
+                  {retryCount > 0 && ` (Attempt ${retryCount + 1})`}
+                </Typography>
+              </Box>
+            </Box>
+          </CardContent>
+        </Card>
+      )}
+      
+      {/* Empty State */}
+      {!loading && filenames.length === 0 && !error && (
+        <Card sx={{ m: 2 }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              No Files Available
+            </Typography>
+            <Typography variant="body2" color="text.secondary" paragraph>
+              This torrent doesn't have any files available yet. This could be because:
+            </Typography>
+            <ul>
+              <li>The torrent is still downloading metadata from peers</li>
+              <li>No peers are available to provide the file information</li>
+              <li>There's a network connectivity issue</li>
+            </ul>
+          </CardContent>
+          <CardActions>
+            <Button 
+              startIcon={<BugReportIcon />}
+              onClick={() => setShowDebugPanel(true)}
+            >
+              Debug This Issue
+            </Button>
+            <Button onClick={handleRetry}>
+              Retry
+            </Button>
+          </CardActions>
+        </Card>
+      )}
+      
+      {/* File Content Display */}
+      {!loading && filenames.length > 0 && (
         <Box>
+          {/* Success indicator */}
+          {autoFixAttempted && (
+            <Alert severity="success" sx={{ m: 2 }}>
+              🎉 Auto-fix successful! Metadata was retrieved and files are now available.
+            </Alert>
+          )}
+          
           {/* File Tabs */}
           <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
             <Tabs 
@@ -143,7 +317,16 @@ function DataViewer({ selectedTorrent }) {
               {filenames.map((filename, index) => (
                 <Tab 
                   key={filename} 
-                  label={filename} 
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      {filename}
+                      <Chip 
+                        label={`${(fileContents[filename]?.length || 0)} chars`} 
+                        size="small" 
+                        variant="outlined"
+                      />
+                    </Box>
+                  }
                   id={`file-tab-${index}`}
                   aria-controls={`file-tabpanel-${index}`}
                 />
@@ -158,9 +341,14 @@ function DataViewer({ selectedTorrent }) {
             return (
               <TabPanel key={filename} value={activeTab} index={index}>
                 <Box sx={{ mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Typography variant="h6" component="h3">
-                    {filename}
-                  </Typography>
+                  <Box>
+                    <Typography variant="h6" component="h3">
+                      {filename}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {content.length.toLocaleString()} characters
+                    </Typography>
+                  </Box>
                   <Button
                     startIcon={<CloudDownloadIcon />}
                     onClick={() => downloadFile(filename, content)}
@@ -170,18 +358,6 @@ function DataViewer({ selectedTorrent }) {
                     Download
                   </Button>
                 </Box>
-
-                {error && (
-                  <>
-                    <Alert severity="error" sx={{ m: 2 }}>
-                      {error}
-                    </Alert>
-                    <MetadataDebugPanel 
-                      torrentHash={selectedTorrent.infoHash} 
-                      torrentName={selectedTorrent.name} 
-                    />
-                  </>
-                )}
                 
                 <TextField
                   multiline
@@ -211,6 +387,21 @@ function DataViewer({ selectedTorrent }) {
               </TabPanel>
             );
           })}
+        </Box>
+      )}
+      
+      {/* Debug Panel Toggle (always available) */}
+      {!showDebugPanel && selectedTorrent && (
+        <Box sx={{ p: 2, textAlign: 'center' }}>
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<BugReportIcon />}
+            onClick={() => setShowDebugPanel(true)}
+            sx={{ opacity: 0.7 }}
+          >
+            Show Debug Panel
+          </Button>
         </Box>
       )}
     </Box>

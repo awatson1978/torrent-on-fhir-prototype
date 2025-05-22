@@ -1,5 +1,3 @@
-// imports/ui/components/MetadataDebugPanel.jsx - Debug panel for metadata issues
-
 import React, { useState } from 'react';
 import { Meteor } from 'meteor/meteor';
 import Paper from '@mui/material/Paper';
@@ -8,6 +6,10 @@ import Button from '@mui/material/Button';
 import Box from '@mui/material/Box';
 import Alert from '@mui/material/Alert';
 import CircularProgress from '@mui/material/CircularProgress';
+import Stepper from '@mui/material/Stepper';
+import Step from '@mui/material/Step';
+import StepLabel from '@mui/material/StepLabel';
+import StepContent from '@mui/material/StepContent';
 import Accordion from '@mui/material/Accordion';
 import AccordionSummary from '@mui/material/AccordionSummary';
 import AccordionDetails from '@mui/material/AccordionDetails';
@@ -18,6 +20,10 @@ import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Chip from '@mui/material/Chip';
+import Card from '@mui/material/Card';
+import CardContent from '@mui/material/CardContent';
+import CardActions from '@mui/material/CardActions';
+import LinearProgress from '@mui/material/LinearProgress';
 import { alpha } from '@mui/material/styles';
 
 // Icons
@@ -27,21 +33,28 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import BuildIcon from '@mui/icons-material/Build';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
+import NetworkCheckIcon from '@mui/icons-material/NetworkCheck';
+import PeopleIcon from '@mui/icons-material/People';
+import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
+import WarningIcon from '@mui/icons-material/Warning';
 
 function MetadataDebugPanel({ torrentHash, torrentName }) {
   const [diagnosis, setDiagnosis] = useState(null);
-  const [metadataWait, setMetadataWait] = useState(null);
-  const [forceResult, setForceResult] = useState(null);
+  const [metadataExchange, setMetadataExchange] = useState(null);
+  const [enhancedReload, setEnhancedReload] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadingType, setLoadingType] = useState('');
+  const [activeStep, setActiveStep] = useState(0);
   
   // Run diagnosis
-  function handleDiagnose() {
+  function handleDiagnosis() {
     setLoading(true);
-    setLoadingType('diagnose');
+    setLoadingType('diagnosis');
     setDiagnosis(null);
     
-    Meteor.call('debug.diagnoseTorrentMetadata', torrentHash, function(err, result) {
+    Meteor.call('torrents.diagnoseMetadataIssues', torrentHash, function(err, result) {
       setLoading(false);
       setLoadingType('');
       
@@ -54,373 +67,369 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
     });
   }
   
-  // Force metadata request
-  function handleForceMetadata() {
+  // Force enhanced metadata exchange
+  function handleEnhancedMetadataExchange() {
     setLoading(true);
-    setLoadingType('force');
-    setForceResult(null);
+    setLoadingType('metadata');
+    setMetadataExchange(null);
     
-    Meteor.call('debug.forceMetadataRequest', torrentHash, function(err, result) {
+    Meteor.call('torrents.forceMetadataExchange', torrentHash, function(err, result) {
       setLoading(false);
       setLoadingType('');
       
       if (err) {
-        console.error('Force metadata error:', err);
-        setForceResult({ error: err.message });
+        console.error('Enhanced metadata exchange error:', err);
+        setMetadataExchange({ error: err.message });
       } else {
-        setForceResult(result);
+        setMetadataExchange(result);
+        
+        // If successful, also refresh diagnosis
+        if (result.success) {
+          setTimeout(handleDiagnosis, 2000);
+        }
       }
     });
   }
   
-  // Wait for metadata
-  function handleWaitForMetadata() {
+  // Enhanced reload
+  function handleEnhancedReload() {
     setLoading(true);
-    setLoadingType('wait');
-    setMetadataWait(null);
+    setLoadingType('reload');
+    setEnhancedReload(null);
     
-    Meteor.call('debug.waitForMetadata', torrentHash, 30000, function(err, result) {
+    Meteor.call('torrents.enhancedReload', torrentHash, function(err, result) {
       setLoading(false);
       setLoadingType('');
       
       if (err) {
-        console.error('Wait metadata error:', err);
-        setMetadataWait({ error: err.message });
+        console.error('Enhanced reload error:', err);
+        setEnhancedReload({ error: err.message });
       } else {
-        setMetadataWait(result);
+        setEnhancedReload(result);
+        
+        // If successful, refresh diagnosis
+        if (result.success) {
+          setTimeout(handleDiagnosis, 2000);
+        }
       }
     });
   }
   
-  // Get status color based on condition
-  function getStatusColor(condition) {
-    if (condition === true) return 'success';
-    if (condition === false) return 'error';
-    return 'warning';
+  // Get severity for diagnosis issues
+  function getDiagnosticSeverity() {
+    if (!diagnosis) return 'info';
+    if (diagnosis.error) return 'error';
+    if (diagnosis.issues && diagnosis.issues.length > 0) {
+      // Check for critical issues
+      const criticalIssues = diagnosis.issues.filter(issue => 
+        issue.includes('not found') || 
+        issue.includes('No peers') ||
+        issue.includes('protocol issue')
+      );
+      return criticalIssues.length > 0 ? 'error' : 'warning';
+    }
+    return 'success';
   }
   
   // Render diagnosis results
   function renderDiagnosis() {
     if (!diagnosis) return null;
     
+    const severity = getDiagnosticSeverity();
+    
     return (
-      <Box sx={{ mt: 2 }}>
-        <Typography variant="h6" gutterBottom>
-          Diagnosis Results
-        </Typography>
-        
-        {diagnosis.error && (
-          <Alert severity="error" sx={{ mb: 2 }}>
-            {diagnosis.error}
-          </Alert>
-        )}
-        
-        {/* Database Status */}
-        <Accordion>
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Typography>Database Status</Typography>
-              <Chip 
-                label={diagnosis.database.exists ? 'Found' : 'Missing'} 
-                color={getStatusColor(diagnosis.database.exists)}
-                size="small"
-              />
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            {diagnosis.database.data && (
-              <Table size="small">
-                <TableBody>
-                  <TableRow>
-                    <TableCell>Name</TableCell>
-                    <TableCell>{diagnosis.database.data.name}</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Files Count</TableCell>
-                    <TableCell>{diagnosis.database.data.filesCount}</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Status</TableCell>
-                    <TableCell>{diagnosis.database.data.status?.state || 'Unknown'}</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Created</TableCell>
-                    <TableCell>{new Date(diagnosis.database.data.created).toLocaleString()}</TableCell>
-                  </TableRow>
-                </TableBody>
-              </Table>
-            )}
-          </AccordionDetails>
-        </Accordion>
-        
-        {/* Client Status */}
-        <Accordion>
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Typography>WebTorrent Client Status</Typography>
-              <Chip 
-                label={diagnosis.client.exists ? 'Found' : 'Missing'} 
-                color={getStatusColor(diagnosis.client.exists)}
-                size="small"
-              />
-              {diagnosis.client.data && (
+      <Card sx={{ mt: 2 }}>
+        <CardContent>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+            <NetworkCheckIcon color="primary" />
+            <Typography variant="h6">Metadata Exchange Diagnosis</Typography>
+            <Chip 
+              label={severity === 'success' ? 'Healthy' : severity === 'warning' ? 'Issues Found' : 'Critical Issues'} 
+              color={severity}
+              size="small"
+            />
+          </Box>
+          
+          {diagnosis.error && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {diagnosis.error}
+            </Alert>
+          )}
+          
+          {/* Basic Status */}
+          {diagnosis.basic && (
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>Current Status:</Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                 <Chip 
-                  label={diagnosis.client.data.ready ? 'Ready' : 'Not Ready'} 
-                  color={getStatusColor(diagnosis.client.data.ready)}
+                  label={`Ready: ${diagnosis.basic.ready ? 'Yes' : 'No'}`} 
+                  color={diagnosis.basic.ready ? 'success' : 'error'}
                   size="small"
                 />
-              )}
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            {diagnosis.client.data && (
-              <Table size="small">
-                <TableBody>
-                  <TableRow>
-                    <TableCell>Ready</TableCell>
-                    <TableCell>
-                      <Chip 
-                        label={diagnosis.client.data.ready ? 'Yes' : 'No'} 
-                        color={getStatusColor(diagnosis.client.data.ready)}
-                        size="small"
-                      />
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Files Count</TableCell>
-                    <TableCell>{diagnosis.client.data.filesCount}</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Progress</TableCell>
-                    <TableCell>{Math.round(diagnosis.client.data.progress * 100)}%</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Peers</TableCell>
-                    <TableCell>{diagnosis.client.data.numPeers}</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Downloaded</TableCell>
-                    <TableCell>{diagnosis.client.data.downloaded} bytes</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Paused</TableCell>
-                    <TableCell>{diagnosis.client.data.paused ? 'Yes' : 'No'}</TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Done</TableCell>
-                    <TableCell>{diagnosis.client.data.done ? 'Yes' : 'No'}</TableCell>
-                  </TableRow>
-                </TableBody>
-              </Table>
-            )}
-          </AccordionDetails>
-        </Accordion>
-        
-        {/* Network Status */}
-        <Accordion>
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Typography>Network Status</Typography>
-              {diagnosis.network.peers !== undefined && (
                 <Chip 
-                  label={`${diagnosis.network.peers} peers`} 
-                  color={diagnosis.network.peers > 0 ? 'success' : 'warning'}
+                  label={`Files: ${diagnosis.basic.files}`} 
+                  color={diagnosis.basic.files > 0 ? 'success' : 'warning'}
                   size="small"
                 />
-              )}
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            {diagnosis.network && (
-              <Box>
-                <Table size="small">
-                  <TableBody>
-                    <TableRow>
-                      <TableCell>Peers</TableCell>
-                      <TableCell>{diagnosis.network.peers || 0}</TableCell>
-                    </TableRow>
-                    <TableRow>
-                      <TableCell>Wires</TableCell>
-                      <TableCell>{diagnosis.network.wires || 0}</TableCell>
-                    </TableRow>
-                    <TableRow>
-                      <TableCell>Download Speed</TableCell>
-                      <TableCell>{diagnosis.network.downloadSpeed || 0} B/s</TableCell>
-                    </TableRow>
-                    <TableRow>
-                      <TableCell>Upload Speed</TableCell>
-                      <TableCell>{diagnosis.network.uploadSpeed || 0} B/s</TableCell>
-                    </TableRow>
-                    <TableRow>
-                      <TableCell>DHT</TableCell>
-                      <TableCell>{diagnosis.network.dht || 'Unknown'}</TableCell>
-                    </TableRow>
-                  </TableBody>
-                </Table>
-                
-                {diagnosis.network.peerDetails && diagnosis.network.peerDetails.length > 0 && (
-                  <Box sx={{ mt: 2 }}>
-                    <Typography variant="subtitle2" gutterBottom>Peer Details:</Typography>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Address</TableCell>
-                          <TableCell>Port</TableCell>
-                          <TableCell>Type</TableCell>
-                          <TableCell>Down Speed</TableCell>
-                          <TableCell>Up Speed</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {diagnosis.network.peerDetails.map((peer, index) => (
-                          <TableRow key={index}>
-                            <TableCell sx={{ fontFamily: 'monospace' }}>{peer.remoteAddress}</TableCell>
-                            <TableCell>{peer.remotePort}</TableCell>
-                            <TableCell>{peer.type}</TableCell>
-                            <TableCell>{peer.downloadSpeed} B/s</TableCell>
-                            <TableCell>{peer.uploadSpeed} B/s</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </Box>
-                )}
+                <Chip 
+                  label={`Peers: ${diagnosis.basic.peers}`} 
+                  color={diagnosis.basic.peers > 0 ? 'success' : 'error'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Connections: ${diagnosis.basic.wires}`} 
+                  color={diagnosis.basic.wires > 0 ? 'success' : 'warning'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Progress: ${Math.round(diagnosis.basic.progress * 100)}%`} 
+                  color={diagnosis.basic.progress > 0 ? 'info' : 'default'}
+                  size="small"
+                />
               </Box>
-            )}
-          </AccordionDetails>
-        </Accordion>
-        
-        {/* Recommendations */}
-        {diagnosis.recommendations && diagnosis.recommendations.length > 0 && (
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="subtitle1" gutterBottom>
-              Recommendations:
-            </Typography>
-            {diagnosis.recommendations.map((rec, index) => (
-              <Alert key={index} severity="info" sx={{ mb: 1 }}>
-                {rec}
-              </Alert>
-            ))}
-          </Box>
-        )}
-      </Box>
-    );
-  }
-  
-  // Render force result
-  function renderForceResult() {
-    if (!forceResult) return null;
-    
-    return (
-      <Box sx={{ mt: 2 }}>
-        <Typography variant="h6" gutterBottom>
-          Force Metadata Result
-        </Typography>
-        
-        {forceResult.error && (
-          <Alert severity="error" sx={{ mb: 2 }}>
-            {forceResult.error}
-          </Alert>
-        )}
-        
-        {forceResult.success && (
-          <Alert severity="success" sx={{ mb: 2 }}>
-            Force metadata request completed successfully
-          </Alert>
-        )}
-        
-        {forceResult.actions && (
-          <Box>
-            <Typography variant="subtitle2" gutterBottom>Actions Taken:</Typography>
-            {forceResult.actions.map((action, index) => (
-              <Typography key={index} variant="body2" sx={{ ml: 2, mb: 0.5 }}>
-                {action}
+            </Box>
+          )}
+          
+          {/* Issues */}
+          {diagnosis.issues && diagnosis.issues.length > 0 && (
+            <Accordion>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <ErrorIcon color="error" />
+                  <Typography>Issues Found ({diagnosis.issues.length})</Typography>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                {diagnosis.issues.map((issue, index) => (
+                  <Alert key={index} severity="warning" sx={{ mb: 1 }}>
+                    {issue}
+                  </Alert>
+                ))}
+              </AccordionDetails>
+            </Accordion>
+          )}
+          
+          {/* Peer Analysis */}
+          {diagnosis.peerAnalysis && diagnosis.peerAnalysis.length > 0 && (
+            <Accordion>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <PeopleIcon color="primary" />
+                  <Typography>Peer Analysis ({diagnosis.peerAnalysis.length} peers)</Typography>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Address</TableCell>
+                        <TableCell>Metadata Support</TableCell>
+                        <TableCell>Interested</TableCell>
+                        <TableCell>Choking</TableCell>
+                        <TableCell>Extensions</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {diagnosis.peerAnalysis.map((peer, index) => (
+                        <TableRow key={index}>
+                          <TableCell sx={{ fontFamily: 'monospace' }}>
+                            {peer.address}:{peer.port}
+                          </TableCell>
+                          <TableCell>
+                            <Chip 
+                              label={peer.supportsMetadata ? 'Yes' : 'No'} 
+                              color={peer.supportsMetadata ? 'success' : 'error'}
+                              size="small"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Chip 
+                              label={peer.interested ? 'Yes' : 'No'} 
+                              color={peer.interested ? 'success' : 'warning'}
+                              size="small"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Chip 
+                              label={peer.choking ? 'Yes' : 'No'} 
+                              color={peer.choking ? 'warning' : 'success'}
+                              size="small"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="caption">
+                              {peer.extensions.join(', ') || 'None'}
+                            </Typography>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </AccordionDetails>
+            </Accordion>
+          )}
+          
+          {/* Recommendations */}
+          {diagnosis.recommendations && diagnosis.recommendations.length > 0 && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>
+                Recommendations:
               </Typography>
-            ))}
-          </Box>
-        )}
-        
-        {forceResult.torrentStatus && (
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="subtitle2" gutterBottom>Final Status:</Typography>
-            <Table size="small">
-              <TableBody>
-                <TableRow>
-                  <TableCell>Ready</TableCell>
-                  <TableCell>{forceResult.torrentStatus.ready ? 'Yes' : 'No'}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell>Files</TableCell>
-                  <TableCell>{forceResult.torrentStatus.files}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell>Peers</TableCell>
-                  <TableCell>{forceResult.torrentStatus.peers}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell>Progress</TableCell>
-                  <TableCell>{Math.round(forceResult.torrentStatus.progress * 100)}%</TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
-          </Box>
-        )}
-      </Box>
+              {diagnosis.recommendations.map((rec, index) => (
+                <Alert key={index} severity="info" sx={{ mb: 1 }}>
+                  {rec}
+                </Alert>
+              ))}
+            </Box>
+          )}
+        </CardContent>
+      </Card>
     );
   }
   
-  // Render metadata wait result
-  function renderMetadataWait() {
-    if (!metadataWait) return null;
+  // Render metadata exchange result
+  function renderMetadataExchange() {
+    if (!metadataExchange) return null;
     
     return (
-      <Box sx={{ mt: 2 }}>
-        <Typography variant="h6" gutterBottom>
-          Metadata Wait Result
-        </Typography>
-        
-        {metadataWait.error && (
-          <Alert severity="error" sx={{ mb: 2 }}>
-            {metadataWait.error}
-          </Alert>
-        )}
-        
-        <Alert severity={metadataWait.success ? 'success' : 'warning'} sx={{ mb: 2 }}>
-          {metadataWait.success ? 'Metadata received successfully!' : 'Metadata wait timed out'}
-        </Alert>
-        
-        {metadataWait.checkpoints && metadataWait.checkpoints.length > 0 && (
-          <Box>
-            <Typography variant="subtitle2" gutterBottom>Progress Checkpoints:</Typography>
-            <TableContainer sx={{ maxHeight: 300 }}>
-              <Table size="small" stickyHeader>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Check</TableCell>
-                    <TableCell>Time (ms)</TableCell>
-                    <TableCell>Ready</TableCell>
-                    <TableCell>Files</TableCell>
-                    <TableCell>Peers</TableCell>
-                    <TableCell>Progress</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {metadataWait.checkpoints.map((checkpoint, index) => (
-                    <TableRow key={index}>
-                      <TableCell>{checkpoint.check || checkpoint.event || index + 1}</TableCell>
-                      <TableCell>{checkpoint.elapsed}</TableCell>
-                      <TableCell>{checkpoint.ready ? 'Yes' : 'No'}</TableCell>
-                      <TableCell>{checkpoint.files || 0}</TableCell>
-                      <TableCell>{checkpoint.peers || 0}</TableCell>
-                      <TableCell>{checkpoint.progress || 0}%</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
+      <Card sx={{ mt: 2 }}>
+        <CardContent>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+            <SwapHorizIcon color="primary" />
+            <Typography variant="h6">Enhanced Metadata Exchange</Typography>
+            <Chip 
+              label={metadataExchange.success ? 'Success' : 'Failed'} 
+              color={metadataExchange.success ? 'success' : 'error'}
+              size="small"
+            />
           </Box>
-        )}
-      </Box>
+          
+          {metadataExchange.error && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {metadataExchange.error}
+            </Alert>
+          )}
+          
+          {metadataExchange.success && (
+            <Alert severity="success" sx={{ mb: 2 }}>
+              🎉 Metadata exchange completed successfully! The torrent should now have file information.
+            </Alert>
+          )}
+          
+          {metadataExchange.actions && (
+            <Accordion>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Typography>Exchange Actions ({metadataExchange.actions.length})</Typography>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Box sx={{ maxHeight: 300, overflow: 'auto' }}>
+                  {metadataExchange.actions.map((action, index) => (
+                    <Typography 
+                      key={index} 
+                      variant="body2" 
+                      sx={{ 
+                        fontFamily: 'monospace', 
+                        mb: 0.5,
+                        fontSize: '0.8rem',
+                        color: action.includes('❌') ? 'error.main' : 
+                               action.includes('✅') ? 'success.main' :
+                               action.includes('⚠️') ? 'warning.main' : 'text.primary'
+                      }}
+                    >
+                      {action}
+                    </Typography>
+                  ))}
+                </Box>
+              </AccordionDetails>
+            </Accordion>
+          )}
+          
+          {metadataExchange.finalStatus && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>Final Status:</Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                <Chip 
+                  label={`Ready: ${metadataExchange.finalStatus.ready ? 'Yes' : 'No'}`} 
+                  color={metadataExchange.finalStatus.ready ? 'success' : 'error'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Files: ${metadataExchange.finalStatus.files}`} 
+                  color={metadataExchange.finalStatus.files > 0 ? 'success' : 'warning'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Peers: ${metadataExchange.finalStatus.peers}`} 
+                  size="small"
+                />
+              </Box>
+            </Box>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+  
+  // Render enhanced reload result
+  function renderEnhancedReload() {
+    if (!enhancedReload) return null;
+    
+    return (
+      <Card sx={{ mt: 2 }}>
+        <CardContent>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+            <RefreshIcon color="primary" />
+            <Typography variant="h6">Enhanced Torrent Reload</Typography>
+            <Chip 
+              label={enhancedReload.success ? 'Success' : 'Failed'} 
+              color={enhancedReload.success ? 'success' : 'error'}
+              size="small"
+            />
+          </Box>
+          
+          {enhancedReload.error && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {enhancedReload.error}
+            </Alert>
+          )}
+          
+          {enhancedReload.success && (
+            <Alert severity="success" sx={{ mb: 2 }}>
+              🔄 Torrent reloaded successfully with enhanced metadata exchange settings!
+            </Alert>
+          )}
+          
+          {enhancedReload.actions && (
+            <Accordion>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Typography>Reload Actions ({enhancedReload.actions.length})</Typography>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Box sx={{ maxHeight: 300, overflow: 'auto' }}>
+                  {enhancedReload.actions.map((action, index) => (
+                    <Typography 
+                      key={index} 
+                      variant="body2" 
+                      sx={{ 
+                        fontFamily: 'monospace', 
+                        mb: 0.5,
+                        fontSize: '0.8rem',
+                        color: action.includes('❌') ? 'error.main' : 
+                               action.includes('✅') ? 'success.main' :
+                               action.includes('⚠️') ? 'warning.main' : 'text.primary'
+                      }}
+                    >
+                      {action}
+                    </Typography>
+                  ))}
+                </Box>
+              </AccordionDetails>
+            </Accordion>
+          )}
+        </CardContent>
+      </Card>
     );
   }
   
@@ -428,57 +437,105 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
     <Paper sx={{ 
       p: 2, 
       mt: 2,
-      backgroundColor: (theme) => alpha(theme.palette.warning.main, 0.05),
-      border: (theme) => `1px solid ${alpha(theme.palette.warning.main, 0.2)}`
+      backgroundColor: (theme) => alpha(theme.palette.info.main, 0.05),
+      border: (theme) => `1px solid ${alpha(theme.palette.info.main, 0.2)}`
     }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-        <BugReportIcon color="warning" />
+        <BugReportIcon color="info" />
         <Typography variant="h6">
-          Metadata Debug Panel
+          Enhanced Metadata Debug Panel
         </Typography>
       </Box>
       
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Debugging torrent: <strong>{torrentName}</strong>
+        Debugging metadata exchange for: <strong>{torrentName}</strong>
         <br />
         Hash: <span style={{ fontFamily: 'monospace' }}>{torrentHash}</span>
       </Typography>
       
-      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
-        <Button
-          variant="outlined"
-          size="small"
-          startIcon={loading && loadingType === 'diagnose' ? <CircularProgress size={16} /> : <BugReportIcon />}
-          onClick={handleDiagnose}
-          disabled={loading}
-        >
-          Run Diagnosis
-        </Button>
-        
-        <Button
-          variant="outlined"
-          size="small"
-          startIcon={loading && loadingType === 'force' ? <CircularProgress size={16} /> : <BuildIcon />}
-          onClick={handleForceMetadata}
-          disabled={loading}
-        >
-          Force Metadata
-        </Button>
-        
-        <Button
-          variant="outlined"
-          size="small"
-          startIcon={loading && loadingType === 'wait' ? <CircularProgress size={16} /> : <AccessTimeIcon />}
-          onClick={handleWaitForMetadata}
-          disabled={loading}
-        >
-          Wait for Metadata
-        </Button>
-      </Box>
+      {loading && (
+        <Box sx={{ mb: 2 }}>
+          <LinearProgress />
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            {loadingType === 'diagnosis' && 'Running diagnosis...'}
+            {loadingType === 'metadata' && 'Forcing enhanced metadata exchange...'}
+            {loadingType === 'reload' && 'Performing enhanced reload...'}
+          </Typography>
+        </Box>
+      )}
+      
+      {/* Action Steps */}
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>Troubleshooting Steps</Typography>
+          <Stepper activeStep={activeStep} orientation="vertical">
+            <Step>
+              <StepLabel>
+                <Typography variant="subtitle1">1. Diagnose Issues</Typography>
+              </StepLabel>
+              <StepContent>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Analyze the current state of the torrent and identify potential metadata exchange issues.
+                </Typography>
+                <Button
+                  variant="contained"
+                  size="small"
+                  startIcon={loading && loadingType === 'diagnosis' ? <CircularProgress size={16} /> : <NetworkCheckIcon />}
+                  onClick={handleDiagnosis}
+                  disabled={loading}
+                >
+                  Run Diagnosis
+                </Button>
+              </StepContent>
+            </Step>
+            
+            <Step>
+              <StepLabel>
+                <Typography variant="subtitle1">2. Force Metadata Exchange</Typography>
+              </StepLabel>
+              <StepContent>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Aggressively communicate with peers to request metadata using enhanced protocols.
+                </Typography>
+                <Button
+                  variant="contained"
+                  size="small"
+                  startIcon={loading && loadingType === 'metadata' ? <CircularProgress size={16} /> : <SwapHorizIcon />}
+                  onClick={handleEnhancedMetadataExchange}
+                  disabled={loading}
+                >
+                  Force Metadata Exchange
+                </Button>
+              </StepContent>
+            </Step>
+            
+            <Step>
+              <StepLabel>
+                <Typography variant="subtitle1">3. Enhanced Reload (If Needed)</Typography>
+              </StepLabel>
+              <StepContent>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Reload the torrent with optimized settings for better metadata exchange.
+                </Typography>
+                <Button
+                  variant="contained"
+                  size="small"
+                  color="warning"
+                  startIcon={loading && loadingType === 'reload' ? <CircularProgress size={16} /> : <RefreshIcon />}
+                  onClick={handleEnhancedReload}
+                  disabled={loading}
+                >
+                  Enhanced Reload
+                </Button>
+              </StepContent>
+            </Step>
+          </Stepper>
+        </CardContent>
+      </Card>
       
       {renderDiagnosis()}
-      {renderForceResult()}
-      {renderMetadataWait()}
+      {renderMetadataExchange()}
+      {renderEnhancedReload()}
     </Paper>
   );
 }

@@ -12,6 +12,7 @@ import './methods/peer-methods';
 import './methods/network-methods';
 import './methods/debug-methods';
 import './methods/methods';
+import './methods/metadata-methods';
 
 import './tracker-fix';
 
@@ -79,7 +80,6 @@ Meteor.startup(async () => {
   // Load environment variables into settings
   loadEnvSettings();
 
-  
   
   // Log configuration
   if (get(Meteor.settings, 'private.debug', false)) {
