@@ -11,6 +11,8 @@ import Tab from '@mui/material/Tab';
 import Button from '@mui/material/Button';
 import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
 
+import MetadataDebugPanel from './MetadataDebugPanel';
+
 function TabPanel(props) {
   const { children, value, index, ...other } = props;
 
@@ -168,6 +170,18 @@ function DataViewer({ selectedTorrent }) {
                     Download
                   </Button>
                 </Box>
+
+                {error && (
+                  <>
+                    <Alert severity="error" sx={{ m: 2 }}>
+                      {error}
+                    </Alert>
+                    <MetadataDebugPanel 
+                      torrentHash={selectedTorrent.infoHash} 
+                      torrentName={selectedTorrent.name} 
+                    />
+                  </>
+                )}
                 
                 <TextField
                   multiline
