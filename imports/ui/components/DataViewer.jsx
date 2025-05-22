@@ -23,7 +23,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import BugReportIcon from '@mui/icons-material/BugReport';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 
-import EnhancedMetadataDebugPanel from './EnhancedMetadataDebugPanel';
+import MetadataDebugPanel from './MetadataDebugPanel';
 
 function TabPanel(props) {
   const { children, value, index, ...other } = props;
@@ -240,7 +240,7 @@ function DataViewer({ selectedTorrent }) {
       
       {/* Enhanced Debug Panel */}
       <Collapse in={showDebugPanel} timeout={300}>
-        <EnhancedMetadataDebugPanel 
+        <MetadataDebugPanel 
           torrentHash={selectedTorrent.infoHash} 
           torrentName={selectedTorrent.name}
         />
