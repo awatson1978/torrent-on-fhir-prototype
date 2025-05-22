@@ -59,9 +59,9 @@ function NetworkHealthChip() {
   }, []);
   
   const statusConfig = {
-    good: { color: 'success', icon: <CircleIcon sx={{ fontSize: 12 }} /> },
+    success: { color: 'success', icon: <CircleIcon sx={{ fontSize: 12 }} /> },
     good: { color: 'good', icon: <CircleIcon sx={{ fontSize: 12 }} /> },
-    warning: { color: 'inactive', icon: <CircleIcon sx={{ fontSize: 12 }} /> },
+    inactive: { color: 'inactive', icon: <CircleIcon sx={{ fontSize: 12 }} /> },
     warning: { color: 'warning', icon: <CircleIcon sx={{ fontSize: 12 }} /> },
     error: { color: 'error', icon: <CircleIcon sx={{ fontSize: 12 }} /> },
     unknown: { color: 'default', icon: <CircleIcon sx={{ fontSize: 12 }} /> }
