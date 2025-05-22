@@ -4,7 +4,8 @@ import { Meteor } from 'meteor/meteor';
 import { get } from 'lodash';
 import { TorrentsCollection } from '/imports/api/torrents/torrents';
 import { Settings } from '/imports/api/settings/settings';
-import { WebTorrentServer } from './webtorrent-server';
+// import { WebTorrentServer } from './webtorrent-server';
+import { WebTorrentServer } from './webtorrent-server-enhanced';
 
 // Import methods
 import './methods/torrent-methods';
