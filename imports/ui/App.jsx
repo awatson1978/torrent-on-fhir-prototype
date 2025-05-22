@@ -2,23 +2,159 @@ import React, { useState, useEffect } from 'react';
 import { createTheme, ThemeProvider } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import Box from '@mui/material/Box';
-import Grid from '@mui/material/Grid';
 import Typography from '@mui/material/Typography';
-import { get } from 'lodash';
-import CircularProgress from '@mui/material/CircularProgress';
+import Button from '@mui/material/Button';
+import IconButton from '@mui/material/IconButton';
+import Collapse from '@mui/material/Collapse';
+import Paper from '@mui/material/Paper';
 import Alert from '@mui/material/Alert';
-import Tabs from '@mui/material/Tabs';
-import Tab from '@mui/material/Tab';
+import CircularProgress from '@mui/material/CircularProgress';
+import { get } from 'lodash';
+import { alpha } from '@mui/material/styles';
+
+// Icons
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import FolderIcon from '@mui/icons-material/Folder';
+import LinkIcon from '@mui/icons-material/Link';
+import NetworkCheckIcon from '@mui/icons-material/NetworkCheck';
+import StorageIcon from '@mui/icons-material/Storage';
+import SettingsIcon from '@mui/icons-material/Settings';
+import HelpIcon from '@mui/icons-material/Help';
+import AddIcon from '@mui/icons-material/Add';
 
 import { Settings } from '../api/settings/settings';
 import TorrentList from './components/TorrentList';
 import PeerList from './components/PeerList';
 import DataViewer from './components/DataViewer';
-import CreateTorrent from './components/CreateTorrent';
-import FhirInput from './components/FhirInput';
-import DebugPanel from './components/DebugPanel';
+// Note: These components need to be created in the imports/ui/components/ directory
+// import ShareWizardModal from './components/ShareWizardModal';
+// import JoinShareModal from './components/JoinShareModal';
+// import NetworkStatusSection from './components/NetworkStatusSection';
+// import QuickActionsSection from './components/QuickActionsSection';
 
-// Create a theme based on settings
+// Temporary inline components for demo
+import ShareWizardModal from './components/ShareWizardModal'; // Replace with actual modal
+import JoinShareModal from './components/JoinShareModal'; // Replace with actual modal
+
+// Inline NetworkStatusSection for now
+function NetworkStatusSection({ expanded, onToggleExpanded }) {
+  return (
+    <Paper sx={{ mb: 2 }} elevation={1}>
+      <Box
+        sx={{
+          p: 2,
+          cursor: 'pointer',
+          transition: 'background-color 0.2s',
+          '&:hover': {
+            backgroundColor: (theme) => alpha(theme.palette.action.hover, 0.5)
+          }
+        }}
+        onClick={onToggleExpanded}
+      >
+        <Box sx={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center' 
+        }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <NetworkCheckIcon color="primary" />
+              <Typography variant="h6" component="h3" sx={{ fontWeight: 500 }}>
+                Network Status
+              </Typography>
+            </Box>
+          </Box>
+          <IconButton size="small">
+            {expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+          </IconButton>
+        </Box>
+      </Box>
+      <Collapse in={expanded} timeout={300}>
+        <Box sx={{ borderTop: 1, borderColor: 'divider' }}>
+          <PeerList compact={true} />
+        </Box>
+      </Collapse>
+    </Paper>
+  );
+}
+
+// Inline QuickActionsSection for now  
+function QuickActionsSection({ hasNoTorrents, onShareData, onJoinShare }) {
+  if (hasNoTorrents) {
+    return (
+      <Paper 
+        sx={{ 
+          mb: 3,
+          p: 4,
+          textAlign: 'center',
+          background: (theme) => 
+            `linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.1)} 0%, ${alpha(theme.palette.secondary.main, 0.05)} 100%)`,
+          border: (theme) => `1px solid ${alpha(theme.palette.primary.main, 0.1)}`
+        }}
+        elevation={0}
+      >
+        <Box sx={{ mb: 3 }}>
+          <StorageIcon sx={{ fontSize: 48, color: 'primary.main', mb: 2 }} />
+          <Typography variant="h4" component="h2" gutterBottom sx={{ fontWeight: 500 }}>
+            Get Started with FHIR P2P
+          </Typography>
+          <Typography variant="body1" color="text.secondary" sx={{ maxWidth: 600, mx: 'auto' }}>
+            Share your FHIR healthcare data securely with peers or join existing data sharing networks.
+          </Typography>
+        </Box>
+        
+        <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', flexWrap: 'wrap' }}>
+          <Button
+            variant="contained"
+            size="large"
+            startIcon={<FolderIcon />}
+            onClick={onShareData}
+            sx={{ px: 4, py: 1.5, fontSize: '1.1rem' }}
+          >
+            Share FHIR Data
+          </Button>
+          
+          <Button
+            variant="outlined"
+            size="large"
+            startIcon={<LinkIcon />}
+            onClick={onJoinShare}
+            sx={{ px: 4, py: 1.5, fontSize: '1.1rem' }}
+          >
+            Join Share
+          </Button>
+        </Box>
+        
+        <Box sx={{ mt: 3 }}>
+          <Typography variant="body2" color="text.secondary">
+            ↓ View existing shares below
+          </Typography>
+        </Box>
+      </Paper>
+    );
+  }
+  
+  return (
+    <Paper sx={{ mb: 2, p: 2 }} elevation={0}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Typography variant="h6" component="h2" sx={{ fontWeight: 500 }}>
+          Quick Actions
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={onShareData}>
+            Share Data
+          </Button>
+          <Button variant="outlined" size="small" startIcon={<LinkIcon />} onClick={onJoinShare}>
+            Join
+          </Button>
+        </Box>
+      </Box>
+    </Paper>
+  );
+}
+
+// Create theme
 function createAppTheme() {
   try {
     const uiConfig = Settings.getUIConfig();
@@ -43,9 +179,6 @@ function createAppTheme() {
           '"Helvetica Neue"',
           'Arial',
           'sans-serif',
-          '"Apple Color Emoji"',
-          '"Segoe UI Emoji"',
-          '"Segoe UI Symbol"',
         ].join(','),
       },
       components: {
@@ -60,53 +193,27 @@ function createAppTheme() {
     });
   } catch (error) {
     console.error('Error creating theme:', error);
-    // Return default theme if there's an error
     return createTheme();
   }
 }
 
-function TabPanel(props) {
-  const { children, value, index, ...other } = props;
-
-  return (
-    <div
-      role="tabpanel"
-      hidden={value !== index}
-      id={`simple-tabpanel-${index}`}
-      aria-labelledby={`simple-tab-${index}`}
-      {...other}
-    >
-      {value === index && (
-        <Box sx={{ pt: 2 }}>
-          {children}
-        </Box>
-      )}
-    </div>
-  );
-}
-
-function a11yProps(index) {
-  return {
-    id: `simple-tab-${index}`,
-    'aria-controls': `simple-tabpanel-${index}`,
-  };
-}
-
-// Make sure to export the component correctly
-// Note we're using a named function instead of an arrow function with const
 export function App() {
   const [theme, setTheme] = useState(createAppTheme());
   const [selectedTorrent, setSelectedTorrent] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [tabValue, setTabValue] = useState(0);
   
-  // Effect to initialize app and handle errors
+  // UI State Management
+  const [networkSectionExpanded, setNetworkSectionExpanded] = useState(false);
+  const [shareWizardOpen, setShareWizardOpen] = useState(false);
+  const [joinShareOpen, setJoinShareOpen] = useState(false);
+  const [torrents, setTorrents] = useState([]);
+  
+  // Initialize app
   useEffect(function() {
     try {
       console.log('App component mounted');
       
-      // Simulate loading to ensure UI has time to initialize
       const timer = setTimeout(function() {
         setIsLoading(false);
         console.log('App loading complete');
@@ -128,73 +235,196 @@ export function App() {
     setSelectedTorrent(torrent);
   }
   
-  // Handle tab change
-  const handleTabChange = (event, newValue) => {
-    setTabValue(newValue);
-  };
+  // Handle torrent updates (for empty state detection)
+  function handleTorrentsUpdate(newTorrents) {
+    setTorrents(newTorrents || []);
+  }
   
   // Show loading state
   if (isLoading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
-        <CircularProgress />
-      </Box>
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <Box sx={{ 
+          display: 'flex', 
+          justifyContent: 'center', 
+          alignItems: 'center', 
+          height: '100vh',
+          flexDirection: 'column',
+          gap: 2
+        }}>
+          <CircularProgress size={48} />
+          <Typography variant="body1" color="text.secondary">
+            Loading FHIR P2P...
+          </Typography>
+        </Box>
+      </ThemeProvider>
     );
   }
   
   // Show error if there is one
   if (error) {
     return (
-      <Box sx={{ m: 2 }}>
-        <Alert severity="error">
-          Error: {error}
-        </Alert>
-        <DebugPanel />
-      </Box>
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <Box sx={{ m: 2 }}>
+          <Alert severity="error" sx={{ mb: 2 }}>
+            Error: {error}
+          </Alert>
+        </Box>
+      </ThemeProvider>
     );
   }
   
-  // Main application
+  const hasNoTorrents = torrents.length === 0;
+  
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Box sx={{ flexGrow: 1, m: 2 }}>
-        <Typography variant="h4" component="h1" gutterBottom>
-          FHIR P2P Data Sharing
-        </Typography>
+      <Box sx={{ 
+        minHeight: '100vh', 
+        background: (theme) => theme.palette.mode === 'dark' 
+    ? 'linear-gradient(180deg, #121212 0%, #1a1a1a 100%)'
+    : 'linear-gradient(180deg, #fafafa 0%, #f5f5f5 100%)'
+      }}>
         
-        <Alert severity="info" sx={{ mb: 2 }}>
-          WebTorrent client is disabled in the browser. Current UI connects to the server-side WebTorrent.
-        </Alert>
-        
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={6}>
-            <PeerList />
-          </Grid>
-          <Grid item xs={12} md={6}>
-            <TorrentList onSelectTorrent={handleSelectTorrent} />
-          </Grid>
-          <Grid item xs={12}>
-            <DataViewer selectedTorrent={selectedTorrent} />
-          </Grid>
+        {/* Header Section */}
+        <Paper 
+          elevation={1} 
+          sx={{ 
+            p: 2, 
+            mb: 2,
+            borderRadius: 0,
+            position: 'sticky',
+            top: 0,
+            zIndex: 1000
+          }}
+        >
+          <Box sx={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center' 
+          }}>
+            <Typography variant="h5" component="h1" sx={{ fontWeight: 500 }}>
+              FHIR P2P Data Sharing
+            </Typography>
+            
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <IconButton size="small" color="inherit">
+                <SettingsIcon />
+              </IconButton>
+              <IconButton size="small" color="inherit">
+                <HelpIcon />
+              </IconButton>
+            </Box>
+          </Box>
+        </Paper>
+
+        <Box sx={{ maxWidth: 'xl', mx: 'auto', px: 2, pb: 2 }}>
           
-          <Grid item xs={12} md={6}>
-            <Box sx={{ borderBottom: 1, borderColor: 'divider', width: '100%' }}>
-              <Tabs value={tabValue} onChange={handleTabChange} aria-label="input tabs">
-                <Tab label="Create From FHIR Data" {...a11yProps(0)} />
-                <Tab label="Add From Magnet" {...a11yProps(1)} />
-              </Tabs>
-              <TabPanel value={tabValue} index={1}>
-                <CreateTorrent />
-              </TabPanel>
-              
-              <TabPanel value={tabValue} index={0}>
-                <FhirInput />
-              </TabPanel>
-            </Box>            
-          </Grid>
-        </Grid>
-        <DebugPanel />
+          {/* Quick Actions / Hero Section */}
+          <QuickActionsSection 
+            hasNoTorrents={hasNoTorrents}
+            onShareData={() => setShareWizardOpen(true)}
+            onJoinShare={() => setJoinShareOpen(true)}
+          />
+          
+          {/* Network Status Section (Collapsible) */}
+          <NetworkStatusSection 
+            expanded={networkSectionExpanded}
+            onToggleExpanded={() => setNetworkSectionExpanded(!networkSectionExpanded)}
+          />
+          
+          {/* My Shares Section (Always Visible Core) */}
+          <Paper sx={{ mb: 2 }}>
+            <Box sx={{ p: 2, pb: 0 }}>
+              <Box sx={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center',
+                mb: 2
+              }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <StorageIcon color="primary" />
+                  <Typography variant="h6" component="h2">
+                    My Shares
+                    {torrents.length > 0 && (
+                      <Typography 
+                        component="span" 
+                        variant="body2" 
+                        color="text.secondary"
+                        sx={{ ml: 1 }}
+                      >
+                        ({torrents.length} active)
+                      </Typography>
+                    )}
+                  </Typography>
+                </Box>
+                
+                {!hasNoTorrents && (
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={<AddIcon />}
+                    onClick={() => setShareWizardOpen(true)}
+                  >
+                    Add Share
+                  </Button>
+                )}
+              </Box>
+            </Box>
+            
+            <TorrentList 
+              onSelectTorrent={handleSelectTorrent}
+              onTorrentsUpdate={handleTorrentsUpdate}
+              selectedTorrent={selectedTorrent}
+            />
+          </Paper>
+          
+          {/* Data Viewer Section (Appears on Selection) */}
+          <Collapse in={!!selectedTorrent} timeout={300}>
+            {selectedTorrent && (
+              <Paper sx={{ mb: 2 }}>
+                <Box sx={{ 
+                  p: 2, 
+                  borderBottom: 1, 
+                  borderColor: 'divider',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Typography variant="h6" component="h3">
+                      📄 {selectedTorrent?.name || 'Selected Share'}
+                    </Typography>
+                  </Box>
+                  <IconButton 
+                    size="small" 
+                    onClick={() => setSelectedTorrent(null)}
+                    sx={{ ml: 1 }}
+                  >
+                    ✕
+                  </IconButton>
+                </Box>
+                
+                <DataViewer selectedTorrent={selectedTorrent} />
+              </Paper>
+            )}
+          </Collapse>
+          
+        </Box>
+        
+        {/* Modals */}
+        <ShareWizardModal 
+          open={shareWizardOpen}
+          onClose={() => setShareWizardOpen(false)}
+        />
+        
+        <JoinShareModal 
+          open={joinShareOpen}
+          onClose={() => setJoinShareOpen(false)}
+        />
+        
       </Box>
     </ThemeProvider>
   );
