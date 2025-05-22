@@ -27,6 +27,8 @@ import { Settings } from '../api/settings/settings';
 import TorrentList from './components/TorrentList';
 import PeerList from './components/PeerList';
 import DataViewer from './components/DataViewer';
+import NetworkHealthChip from './components/NetworkHealthChip';
+
 // Note: These components need to be created in the imports/ui/components/ directory
 // import ShareWizardModal from './components/ShareWizardModal';
 // import JoinShareModal from './components/JoinShareModal';
@@ -310,6 +312,7 @@ export function App() {
             </Typography>
             
             <Box sx={{ display: 'flex', gap: 1 }}>
+              <NetworkHealthChip />
               <IconButton size="small" color="inherit">
                 <SettingsIcon />
               </IconButton>

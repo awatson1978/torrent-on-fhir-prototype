@@ -6,8 +6,20 @@ import Typography from '@mui/material/Typography';
 import IconButton from '@mui/material/IconButton';
 import Collapse from '@mui/material/Collapse';
 import Chip from '@mui/material/Chip';
+import Table from '@mui/material/Table';
+import TableBody from '@mui/material/TableBody';
+import TableCell from '@mui/material/TableCell';
+import TableContainer from '@mui/material/TableContainer';
+import TableHead from '@mui/material/TableHead';
+import TableRow from '@mui/material/TableRow';
+import Button from '@mui/material/Button';
+import Alert from '@mui/material/Alert';
+import Tabs from '@mui/material/Tabs';
+import Tab from '@mui/material/Tab';
+import LinearProgress from '@mui/material/LinearProgress';
 import { alpha } from '@mui/material/styles';
 import { get } from 'lodash';
+import moment from 'moment';
 
 // Icons
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -16,96 +28,113 @@ import NetworkCheckIcon from '@mui/icons-material/NetworkCheck';
 import CloudIcon from '@mui/icons-material/Cloud';
 import SpeedIcon from '@mui/icons-material/Speed';
 import PeopleIcon from '@mui/icons-material/People';
+import RouterIcon from '@mui/icons-material/Router';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import AnnouncementIcon from '@mui/icons-material/Announcement';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
+import WarningIcon from '@mui/icons-material/Warning';
 
-import PeerList from './PeerList';
+function TabPanel(props) {
+  const { children, value, index, ...other } = props;
+  return (
+    <div
+      role="tabpanel"
+      hidden={value !== index}
+      {...other}
+    >
+      {value === index && children}
+    </div>
+  );
+}
 
 function NetworkStatusSection({ expanded, onToggleExpanded }) {
-  const [networkStats, setNetworkStats] = useState({
-    peers: 0,
-    downloadSpeed: 0,
-    uploadSpeed: 0,
-    status: 'connecting'
-  });
-  
+  const [networkStatus, setNetworkStatus] = useState(null);
+  const [trackerHealth, setTrackerHealth] = useState(null);
+  const [activeTab, setActiveTab] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState(null);
   
-  // Fetch network stats
+  // Fetch network status
   useEffect(function() {
-    fetchNetworkStats();
+    fetchNetworkStatus();
     
-    // Update every 10 seconds
-    const interval = Meteor.setInterval(fetchNetworkStats, 10000);
+    // Update every 30 seconds
+    const interval = Meteor.setInterval(fetchNetworkStatus, 30000);
     
     return function() {
       Meteor.clearInterval(interval);
     };
   }, []);
   
-  function fetchNetworkStats() {
+  function fetchNetworkStatus() {
     setLoading(true);
     
-    Meteor.call('peers.getNetworkStats', function(err, result) {
-      setLoading(false);
-      
+    // Get detailed network status
+    Meteor.call('network.getDetailedStatus', function(err, result) {
       if (!err && result) {
-        setNetworkStats({
-          peers: get(result, 'peers', 0),
-          downloadSpeed: get(result, 'downloadSpeed', 0),
-          uploadSpeed: get(result, 'uploadSpeed', 0),
-          status: get(result, 'peers', 0) > 0 ? 'connected' : 'no-peers'
-        });
-      } else {
-        setNetworkStats(prev => ({
-          ...prev,
-          status: 'error'
-        }));
+        setNetworkStatus(result);
+      }
+    });
+    
+    // Get tracker health
+    Meteor.call('network.getTrackerHealth', function(err, result) {
+      setLoading(false);
+      if (!err && result) {
+        setTrackerHealth(result);
+        setLastUpdate(new Date());
       }
     });
   }
   
-  // Format speed
-  function formatSpeed(bytesPerSec) {
-    if (bytesPerSec === 0) return '0 B/s';
-    
-    const k = 1024;
-    const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-    
-    const i = Math.floor(Math.log(bytesPerSec) / Math.log(k));
-    
-    return parseFloat((bytesPerSec / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  function handleForceAnnounce() {
+    setLoading(true);
+    Meteor.call('network.forceAnnounce', function(err, result) {
+      setLoading(false);
+      if (err) {
+        console.error('Force announce error:', err);
+      } else {
+        console.log('Force announce result:', result);
+        // Refresh status after announce
+        setTimeout(fetchNetworkStatus, 2000);
+      }
+    });
   }
   
-  // Get status color and icon
-  function getStatusInfo() {
-    switch (networkStats.status) {
-      case 'connected':
-        return {
-          color: 'success',
-          icon: <CloudIcon />,
-          text: 'Connected'
-        };
-      case 'no-peers':
-        return {
-          color: 'warning',
-          icon: <NetworkCheckIcon />,
-          text: 'No Peers'
-        };
+  function getTrackerStatusInfo(status) {
+    switch (status) {
+      case 'active':
+        return { icon: <CheckCircleIcon />, color: 'success', text: 'Active' };
       case 'error':
-        return {
-          color: 'error',
-          icon: <NetworkCheckIcon />,
-          text: 'Connection Error'
-        };
+        return { icon: <ErrorIcon />, color: 'error', text: 'Error' };
       default:
-        return {
-          color: 'info',
-          icon: <NetworkCheckIcon />,
-          text: 'Connecting...'
-        };
+        return { icon: <WarningIcon />, color: 'warning', text: 'Unknown' };
     }
   }
   
-  const statusInfo = getStatusInfo();
+  function formatTimeAgo(timestamp) {
+    if (!timestamp) return 'Never';
+    return moment(timestamp).fromNow();
+  }
+  
+  // Get overall status
+  function getOverallStatus() {
+    if (!trackerHealth) return { color: 'info', text: 'Loading...', icon: <NetworkCheckIcon /> };
+    
+    const activeCount = trackerHealth.activeTrackers;
+    const totalCount = trackerHealth.totalTrackers;
+    
+    if (activeCount === 0) {
+      return { color: 'error', text: 'No Active Trackers', icon: <ErrorIcon /> };
+    } else if (activeCount < totalCount) {
+      return { color: 'warning', text: `${activeCount}/${totalCount} Trackers`, icon: <WarningIcon /> };
+    } else {
+      return { color: 'success', text: 'All Trackers Active', icon: <CheckCircleIcon /> };
+    }
+  }
+  
+  const overallStatus = getOverallStatus();
+  const lastAnnounce = get(networkStatus, 'trackers.lastGlobalAnnounce');
   
   return (
     <Paper sx={{ mb: 2 }} elevation={1}>
@@ -126,7 +155,7 @@ function NetworkStatusSection({ expanded, onToggleExpanded }) {
           alignItems: 'center' 
         }}>
           
-          {/* Left side - Status and stats */}
+          {/* Left side - Status */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <NetworkCheckIcon color="primary" />
@@ -136,15 +165,15 @@ function NetworkStatusSection({ expanded, onToggleExpanded }) {
             </Box>
             
             <Chip
-              icon={statusInfo.icon}
-              label={statusInfo.text}
-              color={statusInfo.color}
+              icon={overallStatus.icon}
+              label={overallStatus.text}
+              color={overallStatus.color}
               size="small"
               variant="outlined"
             />
           </Box>
           
-          {/* Center - Stats */}
+          {/* Center - Key metrics */}
           <Box sx={{ 
             display: 'flex', 
             alignItems: 'center', 
@@ -152,25 +181,27 @@ function NetworkStatusSection({ expanded, onToggleExpanded }) {
             color: 'text.secondary'
           }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <PeopleIcon fontSize="small" />
+              <RouterIcon fontSize="small" />
               <Typography variant="body2">
-                {networkStats.peers} peers
+                {trackerHealth ? `${trackerHealth.activeTrackers}/${trackerHealth.totalTrackers}` : '0/0'} trackers
               </Typography>
             </Box>
             
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <SpeedIcon fontSize="small" />
+              <AnnouncementIcon fontSize="small" />
               <Typography variant="body2">
-                ↓ {formatSpeed(networkStats.downloadSpeed)}
+                Last: {formatTimeAgo(lastAnnounce)}
               </Typography>
             </Box>
             
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <SpeedIcon fontSize="small" />
-              <Typography variant="body2">
-                ↑ {formatSpeed(networkStats.uploadSpeed)}
-              </Typography>
-            </Box>
+            {get(networkStatus, 'dht.enabled') && (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <CloudIcon fontSize="small" />
+                <Typography variant="body2">
+                  DHT: {get(networkStatus, 'dht.status', 'inactive')}
+                </Typography>
+              </Box>
+            )}
           </Box>
           
           {/* Right side - Expand button */}
@@ -188,11 +219,179 @@ function NetworkStatusSection({ expanded, onToggleExpanded }) {
           borderColor: 'divider',
           backgroundColor: (theme) => alpha(theme.palette.background.paper, 0.5)
         }}>
-          <PeerList compact={true} />
+          
+          {/* Action buttons */}
+          <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 500 }}>
+                Network Diagnostics
+              </Typography>
+              
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<RefreshIcon />}
+                  onClick={fetchNetworkStatus}
+                  disabled={loading}
+                >
+                  Refresh
+                </Button>
+                
+                <Button
+                  variant="contained"
+                  size="small"
+                  startIcon={<AnnouncementIcon />}
+                  onClick={handleForceAnnounce}
+                  disabled={loading}
+                >
+                  Force Announce
+                </Button>
+              </Box>
+            </Box>
+            
+            {lastUpdate && (
+              <Typography variant="caption" color="text.secondary">
+                Last updated: {formatTimeAgo(lastUpdate)}
+              </Typography>
+            )}
+            
+            {loading && <LinearProgress sx={{ mt: 1 }} />}
+          </Box>
+          
+          {/* Tabs for different views */}
+          <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+            <Tabs value={activeTab} onChange={(e, v) => setActiveTab(v)}>
+              <Tab label="Tracker Status" />
+              <Tab label="Announce History" />
+              <Tab label="DHT & WebSeeds" />
+              <Tab label="Configuration" />
+            </Tabs>
+          </Box>
+          
+          {/* Tab content */}
+          <TabPanel value={activeTab} index={0}>
+            <TrackerStatusTab trackerHealth={trackerHealth} />
+          </TabPanel>
+          
+          <TabPanel value={activeTab} index={1}>
+            <AnnounceHistoryTab networkStatus={networkStatus} />
+          </TabPanel>
+          
+          <TabPanel value={activeTab} index={2}>
+            <DHTWebSeedsTab networkStatus={networkStatus} />
+          </TabPanel>
+          
+          <TabPanel value={activeTab} index={3}>
+            <ConfigurationTab networkStatus={networkStatus} />
+          </TabPanel>
+          
         </Box>
       </Collapse>
     </Paper>
   );
+}
+
+// Tracker Status Tab Component
+function TrackerStatusTab({ trackerHealth }) {
+  if (!trackerHealth) {
+    return <Box sx={{ p: 2 }}>Loading tracker status...</Box>;
+  }
+  
+  return (
+    <Box sx={{ p: 2 }}>
+      <Alert severity="info" sx={{ mb: 2 }}>
+        Trackers help peers find each other. Active trackers respond to announce requests.
+      </Alert>
+      
+      <TableContainer>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Tracker URL</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell>Success Rate</TableCell>
+              <TableCell>Last Announce</TableCell>
+              <TableCell>Last Response</TableCell>
+              <TableCell>Avg Response</TableCell>
+              <TableCell>Failures</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {trackerHealth.trackers.map((tracker, index) => {
+              const statusInfo = getTrackerStatusInfo(tracker.status);
+              
+              return (
+                <TableRow key={index}>
+                  <TableCell>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                      {tracker.url}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Chip
+                      icon={statusInfo.icon}
+                      label={statusInfo.text}
+                      color={statusInfo.color}
+                      size="small"
+                      variant="outlined"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2">
+                      {tracker.successRate}%
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2" color="text.secondary">
+                      {formatTimeAgo(tracker.lastAnnounce)}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2" color="text.secondary">
+                      {formatTimeAgo(tracker.lastResponse)}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2">
+                      {tracker.averageResponseTime}ms
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Typography 
+                      variant="body2" 
+                      color={tracker.consecutiveFailures > 0 ? 'error.main' : 'text.secondary'}
+                    >
+                      {tracker.consecutiveFailures}
+                    </Typography>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Box>
+  );
+}
+
+// Other tab components would follow similar patterns...
+// AnnounceHistoryTab, DHTWebSeedsTab, ConfigurationTab
+
+function getTrackerStatusInfo(status) {
+  switch (status) {
+    case 'active':
+      return { icon: <CheckCircleIcon />, color: 'success', text: 'Active' };
+    case 'error':
+      return { icon: <ErrorIcon />, color: 'error', text: 'Error' };
+    default:
+      return { icon: <WarningIcon />, color: 'warning', text: 'Unknown' };
+  }
+}
+
+function formatTimeAgo(timestamp) {
+  if (!timestamp) return 'Never';
+  return moment(timestamp).fromNow();
 }
 
 export default NetworkStatusSection;

@@ -423,14 +423,6 @@ function TorrentList({ onSelectTorrent, onTorrentsUpdate, selectedTorrent }) {
                           </IconButton>
                         </Tooltip>
                         
-                        {/* More options menu */}
-                        <IconButton 
-                          size="small" 
-                          onClick={(e) => handleMenuClick(e, torrent)}
-                          sx={{ opacity: 0.5, '&:hover': { opacity: 1 } }}
-                        >
-                          <MoreVertIcon fontSize="small" />
-                        </IconButton>
                       </Box>
                     </TableCell>
                   </TableRow>

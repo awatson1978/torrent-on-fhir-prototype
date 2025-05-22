@@ -75,7 +75,85 @@ function safeAnnounce(torrent) {
  */
 export const WebTorrentServer = {
   _torrents: new Map(),
+
+  _networkStats: {
+    trackers: new Map(), // tracker URL -> { lastAnnounce, lastResponse, status, errors }
+    dht: {
+      enabled: false,
+      nodes: 0,
+      lastBootstrap: null,
+      status: 'inactive'
+    },
+    lastGlobalAnnounce: null,
+    announceHistory: [], // Last 20 announce attempts
+    peerConnections: new Map() // infoHash -> peer connection details
+  },
   
+  _updateTrackerStats: function(trackerUrl, status, responseTime, error = null) {
+    if (!this._networkStats.trackers.has(trackerUrl)) {
+      this._networkStats.trackers.set(trackerUrl, {
+        url: trackerUrl,
+        totalAnnounces: 0,
+        successfulAnnounces: 0,
+        lastAnnounce: null,
+        lastResponse: null,
+        lastError: null,
+        status: 'unknown',
+        averageResponseTime: 0,
+        consecutiveFailures: 0
+      });
+    }
+    
+    const tracker = this._networkStats.trackers.get(trackerUrl);
+    tracker.totalAnnounces++;
+    tracker.lastAnnounce = new Date();
+    
+    if (status === 'success') {
+      tracker.successfulAnnounces++;
+      tracker.lastResponse = new Date();
+      tracker.status = 'active';
+      tracker.consecutiveFailures = 0;
+      tracker.averageResponseTime = (tracker.averageResponseTime + responseTime) / 2;
+    } else {
+      tracker.lastError = error;
+      tracker.status = 'error';
+      tracker.consecutiveFailures++;
+    }
+  },
+
+  // Enhanced announce with tracking
+  _enhancedAnnounce: function(torrent) {
+    const startTime = Date.now();
+    const trackers = this._getTrackersForTorrent(torrent);
+    
+    trackers.forEach(trackerUrl => {
+      try {
+        // Attempt announce and track the result
+        if (typeof torrent.announce === 'function') {
+          torrent.announce();
+          const responseTime = Date.now() - startTime;
+          this._updateTrackerStats(trackerUrl, 'success', responseTime);
+        }
+      } catch (err) {
+        this._updateTrackerStats(trackerUrl, 'error', 0, err.message);
+      }
+    });
+    
+    this._networkStats.lastGlobalAnnounce = new Date();
+    
+    // Keep history of last 20 announces
+    this._networkStats.announceHistory.unshift({
+      timestamp: new Date(),
+      torrentName: torrent.name,
+      infoHash: torrent.infoHash,
+      trackerCount: trackers.length
+    });
+    
+    if (this._networkStats.announceHistory.length > 20) {
+      this._networkStats.announceHistory = this._networkStats.announceHistory.slice(0, 20);
+    }
+  },
+
   /**
    * Initialize the WebTorrent client
    * @return {Promise<Object>} The WebTorrent client instance

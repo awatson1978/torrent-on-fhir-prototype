@@ -9,6 +9,7 @@ import { WebTorrentServer } from './webtorrent-server';
 // Import methods
 import './methods/torrent-methods';
 import './methods/peer-methods';
+import './methods/network-methods';
 import './methods/methods';
 
 import './tracker-fix';

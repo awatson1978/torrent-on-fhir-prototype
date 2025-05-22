@@ -12,19 +12,30 @@ import Box from '@mui/material/Box';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
+import Collapse from '@mui/material/Collapse';
+import IconButton from '@mui/material/IconButton';
+import Tooltip from '@mui/material/Tooltip';
+import { alpha } from '@mui/material/styles';
 import { get } from 'lodash';
+import moment from 'moment';
 
 // Icons
 import RefreshIcon from '@mui/icons-material/Refresh';
 import PeopleIcon from '@mui/icons-material/People';
 import ComputerIcon from '@mui/icons-material/Computer';
 import PublicIcon from '@mui/icons-material/Public';
+import SpeedIcon from '@mui/icons-material/Speed';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import RouterIcon from '@mui/icons-material/Router';
+import CloudIcon from '@mui/icons-material/Cloud';
 
 function PeerList({ compact = false }) {
   const [peers, setPeers] = useState([]);
   const [networkStats, setNetworkStats] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [expandedRows, setExpandedRows] = useState(new Set());
   
   // Fetch peers on component mount and set up interval
   useEffect(function() {
@@ -67,12 +78,20 @@ function PeerList({ compact = false }) {
                 torrentName: torrentName,
                 torrentHash: torrentHash,
                 peerCount: 1,
-                peers: [peer]
+                peers: [peer],
+                totalDownloadSpeed: peer.downloadSpeed || 0,
+                totalUploadSpeed: peer.uploadSpeed || 0,
+                connectionTypes: new Set([peer.connectionType || 'unknown']),
+                clients: new Set([peer.client || 'Unknown'])
               });
             } else {
               const existing = peerMap.get(uniqueId);
               existing.peerCount += 1;
               existing.peers.push(peer);
+              existing.totalDownloadSpeed += (peer.downloadSpeed || 0);
+              existing.totalUploadSpeed += (peer.uploadSpeed || 0);
+              existing.connectionTypes.add(peer.connectionType || 'unknown');
+              existing.clients.add(peer.client || 'Unknown');
             }
           });
         }
@@ -109,6 +128,17 @@ function PeerList({ compact = false }) {
     return formatBytes(bytesPerSec) + '/s';
   }
   
+  // Toggle row expansion
+  function toggleRowExpansion(peerId) {
+    const newExpanded = new Set(expandedRows);
+    if (newExpanded.has(peerId)) {
+      newExpanded.delete(peerId);
+    } else {
+      newExpanded.add(peerId);
+    }
+    setExpandedRows(newExpanded);
+  }
+  
   // Compact view for collapsible section
   if (compact) {
     return (
@@ -131,61 +161,91 @@ function PeerList({ compact = false }) {
           <Box>
             <Box sx={{ mb: 2 }}>
               <Typography variant="subtitle2" gutterBottom>
-                Active Connections
+                Active Connections ({peers.reduce((sum, p) => sum + p.peerCount, 0)} peers)
               </Typography>
               {get(networkStats, 'peers', 0) > 0 && (
                 <Typography variant="body2" color="text.secondary">
-                  Total: {get(networkStats, 'peers', 0)} peers • 
                   ↓ {formatSpeed(get(networkStats, 'downloadSpeed', 0))} • 
                   ↑ {formatSpeed(get(networkStats, 'uploadSpeed', 0))}
                 </Typography>
               )}
             </Box>
             
-            {peers.map((peerGroup) => (
-              <Box 
-                key={peerGroup.id} 
-                sx={{ 
-                  mb: 2, 
-                  p: 2, 
-                  border: 1, 
-                  borderColor: 'divider',
-                  borderRadius: 1,
-                  backgroundColor: 'background.paper'
-                }}
-              >
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-                  <Typography variant="subtitle2" noWrap>
-                    {peerGroup.torrentName}
-                  </Typography>
-                  <Chip
-                    icon={<PeopleIcon />}
-                    label={`${peerGroup.peerCount} peers`}
-                    size="small"
-                    variant="outlined"
-                    color="primary"
-                  />
-                </Box>
-                
-                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
-                  {peerGroup.torrentHash.substring(0, 16)}...
-                </Typography>
-                
-                {peerGroup.peers.length > 0 && (
-                  <Box sx={{ mt: 1 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      Clients: {peerGroup.peers.slice(0, 3).map((peer, idx) => (
-                        <span key={idx}>
-                          {peer.client || 'Unknown'}
-                          {idx < Math.min(peerGroup.peers.length, 3) - 1 ? ', ' : ''}
-                        </span>
-                      ))}
-                      {peerGroup.peers.length > 3 && ` +${peerGroup.peers.length - 3} more`}
-                    </Typography>
-                  </Box>
-                )}
-              </Box>
-            ))}
+            <TableContainer sx={{ maxHeight: 300 }}>
+              <Table size="small" stickyHeader>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Share</TableCell>
+                    <TableCell align="center">Peers</TableCell>
+                    <TableCell>Clients</TableCell>
+                    <TableCell>Speed</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {peers.map((peerGroup) => (
+                    <TableRow key={peerGroup.id} hover>
+                      <TableCell>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <ComputerIcon color="primary" fontSize="small" />
+                          <Box>
+                            <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
+                              {peerGroup.torrentName}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+                              {peerGroup.torrentHash.substring(0, 8)}...
+                            </Typography>
+                          </Box>
+                        </Box>
+                      </TableCell>
+                      
+                      <TableCell align="center">
+                        <Chip
+                          icon={<PeopleIcon />}
+                          label={peerGroup.peerCount}
+                          size="small"
+                          color="primary"
+                          variant="outlined"
+                        />
+                      </TableCell>
+                      
+                      <TableCell>
+                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                          {Array.from(peerGroup.clients).slice(0, 2).map((client, idx) => (
+                            <Chip
+                              key={idx}
+                              label={client}
+                              size="small"
+                              variant="outlined"
+                              color="secondary"
+                            />
+                          ))}
+                          {peerGroup.clients.size > 2 && (
+                            <Chip
+                              label={`+${peerGroup.clients.size - 2}`}
+                              size="small"
+                              variant="outlined"
+                              color="default"
+                            />
+                          )}
+                        </Box>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <Box>
+                          <Typography variant="caption" color="success.main">
+                            ↓ {formatSpeed(peerGroup.totalDownloadSpeed)}
+                          </Typography>
+                          <br />
+                          <Typography variant="caption" color="info.main">
+                            ↑ {formatSpeed(peerGroup.totalUploadSpeed)}
+                          </Typography>
+                        </Box>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
           </Box>
         )}
       </Box>
@@ -201,6 +261,14 @@ function PeerList({ compact = false }) {
           <Typography variant="h6" component="h2">
             Connected Peers
           </Typography>
+          {peers.length > 0 && (
+            <Chip
+              label={`${peers.reduce((sum, p) => sum + p.peerCount, 0)} total`}
+              size="small"
+              variant="outlined"
+              color="primary"
+            />
+          )}
         </Box>
         
         <Button
@@ -208,6 +276,7 @@ function PeerList({ compact = false }) {
           onClick={fetchPeerData}
           size="small"
           variant="outlined"
+          disabled={loading}
         >
           Refresh
         </Button>
@@ -255,72 +324,168 @@ function PeerList({ compact = false }) {
           <Table size="small" aria-label="peers table">
             <TableHead>
               <TableRow>
-                <TableCell>Share</TableCell>
-                <TableCell>Torrent Hash</TableCell>
-                <TableCell align="center">Peers</TableCell>
-                <TableCell>Client Software</TableCell>
-                <TableCell>Connection</TableCell>
+                <TableCell width="40%">Share</TableCell>
+                <TableCell width="15%" align="center">Peers</TableCell>
+                <TableCell width="20%">Clients</TableCell>
+                <TableCell width="15%">Connection</TableCell>
+                <TableCell width="10%" align="center">Details</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {peers.map((peerGroup) => (
-                <TableRow key={peerGroup.id} hover>
-                  <TableCell component="th" scope="row">
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <ComputerIcon color="primary" fontSize="small" />
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                        {peerGroup.torrentName}
-                      </Typography>
-                    </Box>
-                  </TableCell>
-                  
-                  <TableCell>
-                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                      {peerGroup.torrentHash.substring(0, 8)}...
-                    </Typography>
-                  </TableCell>
-                  
-                  <TableCell align="center">
-                    <Chip
-                      icon={<PeopleIcon />}
-                      label={peerGroup.peerCount}
-                      size="small"
-                      color="primary"
-                      variant="outlined"
-                    />
-                  </TableCell>
-                  
-                  <TableCell>
-                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                      {peerGroup.peers.slice(0, 3).map((peer, idx) => (
-                        <Chip
-                          key={idx}
-                          label={peer.client || 'Unknown'}
+                <React.Fragment key={peerGroup.id}>
+                  <TableRow 
+                    hover
+                    sx={{
+                      '&:hover': {
+                        backgroundColor: (theme) => alpha(theme.palette.action.hover, 0.5)
+                      }
+                    }}
+                  >
+                    <TableCell component="th" scope="row">
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <ComputerIcon color="primary" fontSize="small" />
+                        <Box>
+                          <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                            {peerGroup.torrentName}
+                          </Typography>
+                          <Typography 
+                            variant="caption" 
+                            color="text.secondary" 
+                            sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}
+                          >
+                            {peerGroup.torrentHash.substring(0, 16)}...
+                          </Typography>
+                        </Box>
+                      </Box>
+                    </TableCell>
+                    
+                    <TableCell align="center">
+                      <Chip
+                        icon={<PeopleIcon />}
+                        label={peerGroup.peerCount}
+                        size="small"
+                        color="primary"
+                        variant="outlined"
+                      />
+                    </TableCell>
+                    
+                    <TableCell>
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                        {Array.from(peerGroup.clients).slice(0, 3).map((client, idx) => (
+                          <Chip
+                            key={idx}
+                            label={client}
+                            size="small"
+                            variant="outlined"
+                            color="secondary"
+                          />
+                        ))}
+                        {peerGroup.clients.size > 3 && (
+                          <Chip
+                            label={`+${peerGroup.clients.size - 3}`}
+                            size="small"
+                            variant="outlined"
+                            color="default"
+                          />
+                        )}
+                      </Box>
+                    </TableCell>
+                    
+                    <TableCell>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <PublicIcon fontSize="small" color="success" />
+                        <Box>
+                          <Typography variant="body2" color="success.main">
+                            Active
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {Array.from(peerGroup.connectionTypes).join(', ')}
+                          </Typography>
+                        </Box>
+                      </Box>
+                    </TableCell>
+                    
+                    <TableCell align="center">
+                      <Tooltip title={expandedRows.has(peerGroup.id) ? "Hide details" : "Show details"}>
+                        <IconButton
                           size="small"
-                          variant="outlined"
-                          color="secondary"
-                        />
-                      ))}
-                      {peerGroup.peers.length > 3 && (
-                        <Chip
-                          label={`+${peerGroup.peers.length - 3}`}
-                          size="small"
-                          variant="outlined"
-                          color="default"
-                        />
-                      )}
-                    </Box>
-                  </TableCell>
+                          onClick={() => toggleRowExpansion(peerGroup.id)}
+                        >
+                          {expandedRows.has(peerGroup.id) ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                        </IconButton>
+                      </Tooltip>
+                    </TableCell>
+                  </TableRow>
                   
-                  <TableCell>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <PublicIcon fontSize="small" color="success" />
-                      <Typography variant="body2" color="success.main">
-                        Active
-                      </Typography>
-                    </Box>
-                  </TableCell>
-                </TableRow>
+                  {/* Expanded row with detailed peer info */}
+                  <TableRow>
+                    <TableCell colSpan={5} sx={{ py: 0 }}>
+                      <Collapse in={expandedRows.has(peerGroup.id)} timeout={200}>
+                        <Box sx={{ py: 2, px: 4, backgroundColor: (theme) => alpha(theme.palette.background.default, 0.5) }}>
+                          <Typography variant="subtitle2" gutterBottom>
+                            Individual Peer Details
+                          </Typography>
+                          
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Peer ID</TableCell>
+                                <TableCell>Address</TableCell>
+                                <TableCell>Client</TableCell>
+                                <TableCell>Download</TableCell>
+                                <TableCell>Upload</TableCell>
+                                <TableCell>Connection</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {peerGroup.peers.map((peer, idx) => (
+                                <TableRow key={idx}>
+                                  <TableCell>
+                                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                      {peer.id ? peer.id.substring(0, 8) + '...' : 'Unknown'}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                                      {peer.addr}:{peer.port}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Chip
+                                      label={peer.client}
+                                      size="small"
+                                      variant="outlined"
+                                      color="secondary"
+                                    />
+                                  </TableCell>
+                                  <TableCell>
+                                    <Typography variant="body2" color="success.main">
+                                      {formatSpeed(peer.downloadSpeed || 0)}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Typography variant="body2" color="info.main">
+                                      {formatSpeed(peer.uploadSpeed || 0)}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Chip
+                                      label={peer.connectionType || 'Unknown'}
+                                      size="small"
+                                      variant="outlined"
+                                      color="default"
+                                    />
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </Box>
+                      </Collapse>
+                    </TableCell>
+                  </TableRow>
+                </React.Fragment>
               ))}
             </TableBody>
           </Table>
