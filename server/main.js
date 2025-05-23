@@ -160,7 +160,7 @@ Meteor.startup(async () => {
       }
     }
     
-    // Container environment detection
+    // Container environment detection - now using the already imported fs
     if (process.env.DOCKER_CONTAINER || process.env.KUBERNETES_SERVICE_HOST || fs.existsSync('/.dockerenv')) {
       console.log('🐳 DETECTED: Container environment - applying container optimizations');
       
@@ -193,7 +193,6 @@ Meteor.startup(async () => {
   console.log(`📁 Storage directory for port ${port}: ${tempPath}`);
 
   // Ensure storage directory exists
-  const fs = await import('fs');
   if (!fs.existsSync(tempPath)) {
     try {
       fs.mkdirSync(tempPath, { recursive: true });
