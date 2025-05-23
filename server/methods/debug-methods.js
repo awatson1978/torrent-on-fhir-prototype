@@ -1763,6 +1763,148 @@ Meteor.methods({
       result.actions.push(`❌ Error: ${error.message}`);
       return result;
     }
+  },
+
+  /**
+   * Force WebTorrent to use different ports for Client 2
+   */
+  'debug.fixPortConflict': function() {
+    console.log('🔧 FIXING PORT CONFLICT - FORCING DIFFERENT PORTS');
+    
+    const result = {
+      timestamp: new Date(),
+      actions: [],
+      success: false,
+      before: {},
+      after: {}
+    };
+    
+    try {
+      const client = WebTorrentServer.getClient();
+      
+      if (!client) {
+        throw new Error('WebTorrent client not available');
+      }
+      
+      result.before = {
+        listening: client.listening,
+        tcpPort: client.tcpPort,
+        udpPort: client.udpPort,
+        destroyed: client.destroyed,
+        tcpPoolExists: !!client._tcpPool
+      };
+      
+      result.actions.push(`Before: listening=${result.before.listening}, tcpPort=${result.before.tcpPort}, tcpPool=${result.before.tcpPoolExists}`);
+      
+      // If not listening, force it to listen on a different port range
+      if (!client.listening || !client._tcpPool) {
+        result.actions.push('Client not properly listening, forcing port binding...');
+        
+        // Find an available port in a different range
+        const net = require('net');
+        const testPorts = [7881, 7882, 7883, 8881, 8882, 8883, 9881, 9882];
+        
+        function tryPort(portIndex) {
+          if (portIndex >= testPorts.length) {
+            result.actions.push('❌ No available ports found');
+            return;
+          }
+          
+          const testPort = testPorts[portIndex];
+          const testServer = net.createServer();
+          
+          testServer.on('error', function(err) {
+            result.actions.push(`Port ${testPort} unavailable: ${err.message}`);
+            tryPort(portIndex + 1);
+          });
+          
+          testServer.listen(testPort, function() {
+            const availablePort = testServer.address().port;
+            result.actions.push(`✅ Found available port: ${availablePort}`);
+            
+            testServer.close(function() {
+              // Now force WebTorrent to use this port
+              try {
+                // Method 1: Use WebTorrent's listen method with specific port
+                if (typeof client.listen === 'function') {
+                  client.listen(availablePort, function() {
+                    result.actions.push(`✅ WebTorrent listening on port ${availablePort}`);
+                    
+                    result.after = {
+                      listening: client.listening,
+                      tcpPort: client.tcpPort,
+                      udpPort: client.udpPort,
+                      tcpPoolExists: !!client._tcpPool
+                    };
+                    
+                    result.success = client.listening && !!client._tcpPool;
+                    result.actions.push(`After: listening=${result.after.listening}, tcpPort=${result.after.tcpPort}, tcpPool=${result.after.tcpPoolExists}`);
+                    
+                    if (result.success) {
+                      result.actions.push('🎉 SUCCESS: Port conflict resolved!');
+                    }
+                  });
+                } else {
+                  result.actions.push('❌ client.listen method not available');
+                }
+                
+                // Method 2: Force internal port binding
+                if (client._tcpPool) {
+                  result.actions.push('TCP pool exists, checking port binding...');
+                } else {
+                  result.actions.push('⚠️ TCP pool still missing after port assignment');
+                  
+                  // Try to manually create TCP pool with specific port
+                  try {
+                    // Access internal WebTorrent methods
+                    if (client._startTcpPool) {
+                      client._startTcpPool(availablePort);
+                      result.actions.push(`Attempted _startTcpPool(${availablePort})`);
+                    }
+                  } catch (internalErr) {
+                    result.actions.push(`Internal method error: ${internalErr.message}`);
+                  }
+                }
+                
+              } catch (listenErr) {
+                result.actions.push(`❌ Listen error: ${listenErr.message}`);
+                tryPort(portIndex + 1);
+              }
+            });
+          });
+        }
+        
+        // Start trying ports
+        tryPort(0);
+        
+      } else {
+        result.actions.push('✅ Client already listening properly');
+        result.success = true;
+      }
+      
+      // Set up verification after delay
+      Meteor.setTimeout(function() {
+        result.after = {
+          listening: client.listening,
+          tcpPort: client.tcpPort,
+          udpPort: client.udpPort,
+          tcpPoolExists: !!client._tcpPool
+        };
+        
+        result.finalSuccess = client.listening && !!client._tcpPool;
+        result.actions.push(`Final check: listening=${result.after.listening}, tcpPort=${result.after.tcpPort}, tcpPool=${result.after.tcpPoolExists}`);
+        
+        console.log('🔧 Port conflict fix result:', result);
+      }, 5000);
+      
+      return result;
+      
+    } catch (error) {
+      console.error('Error fixing port conflict:', error);
+      result.error = error.message;
+      result.actions.push(`❌ Error: ${error.message}`);
+      return result;
+    }
   }
 });
 
