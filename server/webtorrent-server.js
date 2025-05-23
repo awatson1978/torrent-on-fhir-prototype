@@ -4,6 +4,7 @@ import { Meteor } from 'meteor/meteor';
 import { get } from 'lodash';
 import fs from 'fs';
 import path from 'path';
+import net from 'net';
 import { Settings } from '/imports/api/settings/settings';
 import { TorrentsCollection } from '/imports/api/torrents/torrents';
 import { TorrentParser } from './utils/torrent-parser';
