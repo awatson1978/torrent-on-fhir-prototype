@@ -504,7 +504,7 @@ function forceDownloadStart(torrent) {
       
       // 5. Set up download event listeners to monitor progress
       const onDownload = function() {
-        console.log(`📥 Download progress: ${Math.round(torrent.progress * 100)}%`);
+        // console.log(`📥 Download progress: ${Math.round(torrent.progress * 100)}%`);
       };
       
       const onPiece = function(index) {
