@@ -1106,5 +1106,445 @@ Meteor.methods({
       status: 'monitoring started',
       message: `Monitoring connection attempts for ${durationMs}ms, check logs for real-time updates`
     };
+  },
+
+  /**
+   * Force socket recreation for torrent wires
+   */
+  'debug.forceSocketRecreation': function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`🔧 FORCING SOCKET RECREATION for ${infoHash}`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      actions: [],
+      wireResults: [],
+      success: false
+    };
+    
+    try {
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        throw new Error('Torrent not found');
+      }
+      
+      result.actions.push(`Found torrent: ${torrent.name}`);
+      result.actions.push(`Initial wire count: ${torrent.wires ? torrent.wires.length : 0}`);
+      
+      // Get the WebTorrent client
+      const client = WebTorrentServer.getClient();
+      if (!client) {
+        throw new Error('WebTorrent client not available');
+      }
+      
+      result.actions.push('WebTorrent client available');
+      
+      // Analyze current wires
+      if (torrent.wires && torrent.wires.length > 0) {
+        result.actions.push('Analyzing existing wires...');
+        
+        torrent.wires.forEach(function(wire, index) {
+          const wireResult = {
+            index: index,
+            before: {
+              remoteAddress: wire.remoteAddress,
+              hasSocket: !!wire._socket,
+              destroyed: wire.destroyed,
+              readable: wire.readable,
+              writable: wire.writable
+            },
+            actions: [],
+            success: false
+          };
+          
+          try {
+            // Check if wire has remote address but no socket
+            if (wire.remoteAddress && !wire._socket) {
+              wireResult.actions.push(`Wire ${index} has remoteAddress but no socket - attempting recreation`);
+              
+              // Try to manually create a socket connection
+              const net = require('net');
+              const socket = new net.Socket();
+              
+              // Extract port from remoteAddress if IPv6 format
+              let cleanAddress = wire.remoteAddress;
+              let port = wire.remotePort;
+              
+              if (cleanAddress.startsWith('::ffff:')) {
+                cleanAddress = cleanAddress.substring(7); // Remove IPv6 prefix
+              }
+              
+              wireResult.actions.push(`Attempting socket connection to ${cleanAddress}:${port}`);
+              
+              // Set up socket event handlers
+              socket.on('connect', function() {
+                wireResult.actions.push(`Socket connected successfully to ${cleanAddress}:${port}`);
+                
+                // Try to attach this socket to the wire
+                try {
+                  wire._socket = socket;
+                  wire.readable = true;
+                  wire.writable = true;
+                  wire._connected = true;
+                  
+                  wireResult.actions.push('Socket attached to wire successfully');
+                  wireResult.success = true;
+                  
+                  // Trigger wire initialization
+                  if (typeof wire._init === 'function') {
+                    wire._init();
+                    wireResult.actions.push('Wire initialization triggered');
+                  }
+                  
+                } catch (attachErr) {
+                  wireResult.actions.push(`Error attaching socket: ${attachErr.message}`);
+                }
+              });
+              
+              socket.on('error', function(err) {
+                wireResult.actions.push(`Socket connection error: ${err.message}`);
+              });
+              
+              socket.on('close', function() {
+                wireResult.actions.push('Socket closed');
+              });
+              
+              // Attempt connection with timeout
+              socket.setTimeout(10000, function() {
+                wireResult.actions.push('Socket connection timeout');
+                socket.destroy();
+              });
+              
+              // Start connection
+              socket.connect(port, cleanAddress);
+              
+            } else if (!wire.remoteAddress) {
+              wireResult.actions.push(`Wire ${index} has no remoteAddress - cannot recreate socket`);
+            } else if (wire._socket) {
+              wireResult.actions.push(`Wire ${index} already has socket`);
+              wireResult.success = true;
+            }
+            
+          } catch (wireErr) {
+            wireResult.actions.push(`Wire ${index} error: ${wireErr.message}`);
+          }
+          
+          result.wireResults.push(wireResult);
+        });
+      }
+      
+      // Also try to force client to create new connections
+      result.actions.push('Forcing client to create new peer connections...');
+      
+      try {
+        // Force announce to get more peers
+        if (typeof torrent.announce === 'function') {
+          torrent.announce();
+          result.actions.push('Forced announce to trackers');
+        }
+        
+        // Force DHT announce
+        if (torrent.discovery && torrent.discovery.dht) {
+          torrent.discovery.dht.announce(torrent.infoHash);
+          result.actions.push('Forced DHT announce');
+        }
+        
+        // Try to resume torrent if paused
+        if (torrent.paused) {
+          torrent.resume();
+          result.actions.push('Resumed torrent');
+        }
+        
+      } catch (announceErr) {
+        result.actions.push(`Announce error: ${announceErr.message}`);
+      }
+      
+      // Check if any operations succeeded
+      const successfulWires = result.wireResults.filter(w => w.success).length;
+      result.success = successfulWires > 0;
+      
+      result.summary = {
+        totalWires: result.wireResults.length,
+        successfulRecreations: successfulWires,
+        pendingConnections: result.wireResults.filter(w => w.actions.some(a => a.includes('Attempting socket'))).length
+      };
+      
+      console.log('🔧 Socket recreation completed:', result.summary);
+      return result;
+      
+    } catch (error) {
+      console.error('Error in socket recreation:', error);
+      result.error = error.message;
+      result.actions.push(`❌ Error: ${error.message}`);
+      return result;
+    }
+  },
+
+  /**
+   * Monitor socket creation in real-time
+   */
+  'debug.monitorSocketCreation': function(infoHash, durationMs = 30000) {
+    check(infoHash, String);
+    check(durationMs, Number);
+    
+    console.log(`📊 MONITORING SOCKET CREATION for ${durationMs}ms`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      duration: durationMs,
+      events: [],
+      monitoring: true
+    };
+    
+    try {
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        throw new Error('Torrent not found');
+      }
+      
+      const startTime = Date.now();
+      let eventCount = 0;
+      
+      // Override the wire creation to monitor socket attachment
+      const originalOnWire = torrent._onWire;
+      
+      torrent._onWire = function(wire) {
+        eventCount++;
+        const wireEvent = {
+          event: 'wire_created',
+          timestamp: new Date(),
+          elapsed: Date.now() - startTime,
+          wireIndex: eventCount,
+          remoteAddress: wire.remoteAddress || 'undefined',
+          hasSocket: !!wire._socket,
+          socketDetails: wire._socket ? {
+            readyState: wire._socket.readyState,
+            connecting: wire._socket.connecting,
+            destroyed: wire._socket.destroyed
+          } : null
+        };
+        
+        result.events.push(wireEvent);
+        console.log(`📊 Wire created #${eventCount}:`, wireEvent);
+        
+        // Monitor socket state changes for this wire
+        let lastSocketState = !!wire._socket;
+        
+        const socketMonitor = Meteor.setInterval(function() {
+          const currentSocketState = !!wire._socket;
+          
+          if (currentSocketState !== lastSocketState) {
+            const socketEvent = {
+              event: currentSocketState ? 'socket_attached' : 'socket_detached',
+              timestamp: new Date(),
+              elapsed: Date.now() - startTime,
+              wireIndex: eventCount,
+              socketDetails: wire._socket ? {
+                readyState: wire._socket.readyState,
+                connecting: wire._socket.connecting,
+                destroyed: wire._socket.destroyed,
+                remoteAddress: wire._socket.remoteAddress,
+                localAddress: wire._socket.localAddress
+              } : null
+            };
+            
+            result.events.push(socketEvent);
+            console.log(`📊 Socket state changed for wire #${eventCount}:`, socketEvent);
+            
+            lastSocketState = currentSocketState;
+          }
+          
+          // Stop monitoring if wire is destroyed
+          if (wire.destroyed) {
+            Meteor.clearInterval(socketMonitor);
+            
+            const destroyEvent = {
+              event: 'wire_destroyed',
+              timestamp: new Date(),
+              elapsed: Date.now() - startTime,
+              wireIndex: eventCount
+            };
+            
+            result.events.push(destroyEvent);
+            console.log(`📊 Wire #${eventCount} destroyed:`, destroyEvent);
+          }
+        }, 1000);
+        
+        // Clean up monitor after duration
+        Meteor.setTimeout(function() {
+          Meteor.clearInterval(socketMonitor);
+        }, durationMs);
+        
+        // Call original handler
+        if (originalOnWire) {
+          originalOnWire.call(this, wire);
+        }
+      };
+      
+      // Restore original handler after monitoring
+      Meteor.setTimeout(function() {
+        torrent._onWire = originalOnWire;
+        result.monitoring = false;
+        result.totalEvents = result.events.length;
+        console.log(`📊 Socket monitoring completed. Total events: ${result.events.length}`);
+      }, durationMs);
+      
+      return {
+        ...result,
+        status: 'monitoring started',
+        message: `Monitoring socket creation for ${durationMs}ms`
+      };
+      
+    } catch (error) {
+      console.error('Error in socket monitoring:', error);
+      result.error = error.message;
+      return result;
+    }
+  },
+
+  /**
+   * Advanced WebTorrent client diagnostics
+   */
+  'debug.diagnoseWebTorrentClient': function() {
+    console.log(`🔬 DIAGNOSING WEBTORRENT CLIENT STATE`);
+    
+    const result = {
+      timestamp: new Date(),
+      client: {},
+      system: {},
+      network: {},
+      limitations: {},
+      recommendations: []
+    };
+    
+    try {
+      const client = WebTorrentServer.getClient();
+      
+      if (!client) {
+        result.error = 'WebTorrent client not initialized';
+        return result;
+      }
+      
+      // Basic client state
+      result.client = {
+        destroyed: client.destroyed,
+        listening: client.listening,
+        tcpPort: client.tcpPort,
+        udpPort: client.udpPort,
+        maxConns: client.maxConns,
+        torrentsCount: client.torrents ? client.torrents.length : 0,
+        nodeId: client.nodeId ? client.nodeId.toString('hex') : null,
+        peerId: client.peerId ? client.peerId.toString('hex') : null,
+        throttleDownload: client.throttleDownload,
+        throttleUpload: client.throttleUpload
+      };
+      
+      // System limitations
+      const os = require('os');
+      result.system = {
+        platform: os.platform(),
+        arch: os.arch(),
+        nodeVersion: process.version,
+        totalMemory: Math.round(os.totalmem() / 1024 / 1024) + ' MB',
+        freeMemory: Math.round(os.freemem() / 1024 / 1024) + ' MB',
+        loadAverage: os.loadavg(),
+        uptime: Math.round(os.uptime() / 60) + ' minutes',
+        cpuCount: os.cpus().length
+      };
+      
+      // Check file descriptor limits (Unix-like systems)
+      if (process.platform !== 'win32') {
+        try {
+          const { execSync } = require('child_process');
+          const ulimitResult = execSync('ulimit -n', { encoding: 'utf8' }).trim();
+          result.limitations.fileDescriptors = {
+            current: parseInt(ulimitResult),
+            recommended: 8192,
+            sufficient: parseInt(ulimitResult) >= 1024
+          };
+        } catch (ulimitErr) {
+          result.limitations.fileDescriptors = {
+            error: 'Could not check ulimit'
+          };
+        }
+      }
+      
+      // Network interface analysis
+      const networkInterfaces = os.networkInterfaces();
+      result.network = {
+        interfaces: Object.keys(networkInterfaces).map(name => ({
+          name: name,
+          addresses: networkInterfaces[name].map(addr => ({
+            address: addr.address,
+            family: addr.family,
+            internal: addr.internal
+          }))
+        })),
+        hasIPv4: Object.values(networkInterfaces).flat().some(addr => addr.family === 'IPv4' && !addr.internal),
+        hasIPv6: Object.values(networkInterfaces).flat().some(addr => addr.family === 'IPv6' && !addr.internal)
+      };
+      
+      // Check if client has socket creation capability
+      try {
+        const net = require('net');
+        const testSocket = new net.Socket();
+        testSocket.destroy();
+        result.limitations.canCreateSockets = true;
+      } catch (socketErr) {
+        result.limitations.canCreateSockets = false;
+        result.limitations.socketError = socketErr.message;
+      }
+      
+      // WebTorrent-specific checks
+      if (client._tcpPool) {
+        result.client.tcpPool = {
+          exists: true,
+          listening: client._tcpPool.listening,
+          port: client._tcpPool.port
+        };
+      } else {
+        result.client.tcpPool = { exists: false };
+      }
+      
+      // Generate recommendations
+      if (!result.client.listening) {
+        result.recommendations.push('WebTorrent client not listening - check port binding');
+      }
+      
+      if (result.client.maxConns < 100) {
+        result.recommendations.push(`Low maxConns (${result.client.maxConns}) - consider increasing for better connectivity`);
+      }
+      
+      if (result.limitations.fileDescriptors && !result.limitations.fileDescriptors.sufficient) {
+        result.recommendations.push('Low file descriptor limit may cause connection issues');
+      }
+      
+      if (!result.limitations.canCreateSockets) {
+        result.recommendations.push('CRITICAL: Cannot create sockets - permission or system issue');
+      }
+      
+      if (!result.network.hasIPv4) {
+        result.recommendations.push('No IPv4 addresses found - may limit peer connectivity');
+      }
+      
+      if (!result.client.tcpPool.exists) {
+        result.recommendations.push('No TCP pool - WebTorrent may not be able to create outbound connections');
+      }
+      
+      console.log('🔬 WebTorrent client diagnosis completed:', result);
+      return result;
+      
+    } catch (error) {
+      console.error('Error in WebTorrent client diagnosis:', error);
+      result.error = error.message;
+      return result;
+    }
   }
 });
+
+

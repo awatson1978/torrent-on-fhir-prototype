@@ -94,11 +94,11 @@ function TorrentList({ onSelectTorrent, onTorrentsUpdate, selectedTorrent }) {
 
   // Subscribe to torrents and get data
   const { torrents, isLoading, isReady } = useTracker(function() {
-    console.log('TorrentList: Rerunning tracker function');
+    // console.log('TorrentList: Rerunning tracker function');
     const sub = Meteor.subscribe('torrents.all');
     
     const results = TorrentsCollection.find({}, { sort: { created: -1 } }).fetch();
-    console.log(`TorrentList: Subscription ${sub.ready() ? 'ready' : 'not ready'}, found ${results.length} torrents`);
+    // console.log(`TorrentList: Subscription ${sub.ready() ? 'ready' : 'not ready'}, found ${results.length} torrents`);
     
     return {
       torrents: results,
