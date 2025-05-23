@@ -141,7 +141,7 @@ function DataViewer({ selectedTorrent }) {
     setAutoFixAttempted(true);
     setLoading(true);
     
-    Meteor.call('torrents.forceMetadataExchange', selectedTorrent.infoHash, function(err, result) {
+    Meteor.call('torrents.forceCompleteMetadataFix', selectedTorrent.infoHash, function(err, result) {
       if (err) {
         console.error('Auto-fix error:', err);
         setError(`Auto-fix failed: ${err.message}`);

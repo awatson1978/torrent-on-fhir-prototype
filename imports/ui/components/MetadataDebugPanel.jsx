@@ -22,28 +22,26 @@ import TableRow from '@mui/material/TableRow';
 import Chip from '@mui/material/Chip';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
-import CardActions from '@mui/material/CardActions';
 import LinearProgress from '@mui/material/LinearProgress';
 import { alpha } from '@mui/material/styles';
 
 // Icons
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import BugReportIcon from '@mui/icons-material/BugReport';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import RefreshIcon from '@mui/icons-material/Refresh';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import BuildIcon from '@mui/icons-material/Build';
-import AccessTimeIcon from '@mui/icons-material/AccessTime';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import NetworkCheckIcon from '@mui/icons-material/NetworkCheck';
-import PeopleIcon from '@mui/icons-material/People';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import WarningIcon from '@mui/icons-material/Warning';
+import SeedingIcon from '@mui/icons-material/CloudUpload';
 
 function MetadataDebugPanel({ torrentHash, torrentName }) {
   const [diagnosis, setDiagnosis] = useState(null);
-  const [metadataExchange, setMetadataExchange] = useState(null);
-  const [enhancedReload, setEnhancedReload] = useState(null);
+  const [completeFixResult, setCompleteFixResult] = useState(null);
+  const [seedingFixResult, setSeedingFixResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadingType, setLoadingType] = useState('');
   const [activeStep, setActiveStep] = useState(0);
@@ -63,54 +61,55 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
         setDiagnosis({ error: err.message });
       } else {
         setDiagnosis(result);
+        console.log('Diagnosis result:', result);
       }
     });
   }
   
-  // Force enhanced metadata exchange
-  function handleEnhancedMetadataExchange() {
+  // Complete metadata fix
+  function handleCompleteMetadataFix() {
     setLoading(true);
-    setLoadingType('metadata');
-    setMetadataExchange(null);
+    setLoadingType('complete-fix');
+    setCompleteFixResult(null);
     
-    Meteor.call('torrents.forceMetadataExchange', torrentHash, function(err, result) {
+    Meteor.call('torrents.forceCompleteMetadataFix', torrentHash, function(err, result) {
       setLoading(false);
       setLoadingType('');
       
       if (err) {
-        console.error('Enhanced metadata exchange error:', err);
-        setMetadataExchange({ error: err.message });
+        console.error('Complete fix error:', err);
+        setCompleteFixResult({ error: err.message });
       } else {
-        setMetadataExchange(result);
+        setCompleteFixResult(result);
+        console.log('Complete fix result:', result);
         
-        // If successful, also refresh diagnosis
+        // Auto-refresh diagnosis after successful fix
         if (result.success) {
-          setTimeout(handleDiagnosis, 2000);
+          setTimeout(handleDiagnosis, 3000);
         }
       }
     });
   }
   
-  // Enhanced reload
-  function handleEnhancedReload() {
+  // Fix seeding metadata
+  function handleSeedingFix() {
     setLoading(true);
-    setLoadingType('reload');
-    setEnhancedReload(null);
+    setLoadingType('seeding-fix');
+    setSeedingFixResult(null);
     
-    Meteor.call('torrents.enhancedReload', torrentHash, function(err, result) {
+    Meteor.call('torrents.fixSeedingMetadata', torrentHash, function(err, result) {
       setLoading(false);
       setLoadingType('');
       
       if (err) {
-        console.error('Enhanced reload error:', err);
-        setEnhancedReload({ error: err.message });
+        console.error('Seeding fix error:', err);
+        setSeedingFixResult({ error: err.message });
       } else {
-        setEnhancedReload(result);
+        setSeedingFixResult(result);
+        console.log('Seeding fix result:', result);
         
-        // If successful, refresh diagnosis
-        if (result.success) {
-          setTimeout(handleDiagnosis, 2000);
-        }
+        // Auto-refresh diagnosis
+        setTimeout(handleDiagnosis, 2000);
       }
     });
   }
@@ -120,15 +119,20 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
     if (!diagnosis) return 'info';
     if (diagnosis.error) return 'error';
     if (diagnosis.issues && diagnosis.issues.length > 0) {
-      // Check for critical issues
       const criticalIssues = diagnosis.issues.filter(issue => 
         issue.includes('not found') || 
         issue.includes('No peers') ||
-        issue.includes('protocol issue')
+        issue.includes('protocol issue') ||
+        issue.includes('does not support ut_metadata')
       );
       return criticalIssues.length > 0 ? 'error' : 'warning';
     }
     return 'success';
+  }
+  
+  // Determine if this is likely a seeding torrent
+  function isLikelySeeding() {
+    return diagnosis?.basic?.files > 0 && diagnosis?.basic?.ready;
   }
   
   // Render diagnosis results
@@ -136,6 +140,7 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
     if (!diagnosis) return null;
     
     const severity = getDiagnosticSeverity();
+    const likelySeeding = isLikelySeeding();
     
     return (
       <Card sx={{ mt: 2 }}>
@@ -148,6 +153,15 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
               color={severity}
               size="small"
             />
+            {likelySeeding && (
+              <Chip 
+                icon={<SeedingIcon />}
+                label="Seeding Mode" 
+                color="info"
+                size="small"
+                variant="outlined"
+              />
+            )}
           </Box>
           
           {diagnosis.error && (
@@ -190,7 +204,7 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
             </Box>
           )}
           
-          {/* Issues */}
+          {/* Issues with specific guidance */}
           {diagnosis.issues && diagnosis.issues.length > 0 && (
             <Accordion>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -200,11 +214,32 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
                 </Box>
               </AccordionSummary>
               <AccordionDetails>
-                {diagnosis.issues.map((issue, index) => (
-                  <Alert key={index} severity="warning" sx={{ mb: 1 }}>
-                    {issue}
-                  </Alert>
-                ))}
+                {diagnosis.issues.map((issue, index) => {
+                  let guidance = '';
+                  let severity = 'warning';
+                  
+                  if (issue.includes('does not support ut_metadata')) {
+                    guidance = '→ This indicates the seeding peer is not properly advertising metadata support. Use "Fix Seeding Metadata" on the seeding client.';
+                    severity = 'error';
+                  } else if (issue.includes('not interested')) {
+                    guidance = '→ The peer connection handshake needs to be enhanced. Try "Complete Metadata Fix".';
+                    severity = 'warning';
+                  } else if (issue.includes('No connected peers support metadata')) {
+                    guidance = '→ All connected peers lack metadata support. This is a critical protocol issue requiring complete fix.';
+                    severity = 'error';
+                  }
+                  
+                  return (
+                    <Alert key={index} severity={severity} sx={{ mb: 1 }}>
+                      <Typography variant="body2">{issue}</Typography>
+                      {guidance && (
+                        <Typography variant="caption" sx={{ mt: 1, display: 'block', fontStyle: 'italic' }}>
+                          {guidance}
+                        </Typography>
+                      )}
+                    </Alert>
+                  );
+                })}
               </AccordionDetails>
             </Accordion>
           )}
@@ -214,7 +249,7 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
             <Accordion>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <PeopleIcon color="primary" />
+                  <SwapHorizIcon color="primary" />
                   <Typography>Peer Analysis ({diagnosis.peerAnalysis.length} peers)</Typography>
                 </Box>
               </AccordionSummary>
@@ -228,42 +263,70 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
                         <TableCell>Interested</TableCell>
                         <TableCell>Choking</TableCell>
                         <TableCell>Extensions</TableCell>
+                        <TableCell>Action Needed</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {diagnosis.peerAnalysis.map((peer, index) => (
-                        <TableRow key={index}>
-                          <TableCell sx={{ fontFamily: 'monospace' }}>
-                            {peer.address}:{peer.port}
-                          </TableCell>
-                          <TableCell>
-                            <Chip 
-                              label={peer.supportsMetadata ? 'Yes' : 'No'} 
-                              color={peer.supportsMetadata ? 'success' : 'error'}
-                              size="small"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Chip 
-                              label={peer.interested ? 'Yes' : 'No'} 
-                              color={peer.interested ? 'success' : 'warning'}
-                              size="small"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Chip 
-                              label={peer.choking ? 'Yes' : 'No'} 
-                              color={peer.choking ? 'warning' : 'success'}
-                              size="small"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Typography variant="caption">
-                              {peer.extensions.join(', ') || 'None'}
-                            </Typography>
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {diagnosis.peerAnalysis.map((peer, index) => {
+                        // Determine the specific issue and action needed
+                        let actionNeeded = 'OK';
+                        let actionColor = 'success';
+                        
+                        if (!peer.supportsMetadata) {
+                          if (peer.extensions.includes('extended')) {
+                            actionNeeded = 'Force ut_metadata';
+                            actionColor = 'error';
+                          } else {
+                            actionNeeded = 'No extended protocol';
+                            actionColor = 'error';
+                          }
+                        } else if (!peer.interested) {
+                          actionNeeded = 'Force handshake';
+                          actionColor = 'warning';
+                        }
+                        
+                        return (
+                          <TableRow key={index}>
+                            <TableCell sx={{ fontFamily: 'monospace' }}>
+                              {peer.address}:{peer.port}
+                            </TableCell>
+                            <TableCell>
+                              <Chip 
+                                label={peer.supportsMetadata ? 'Yes' : 'No'} 
+                                color={peer.supportsMetadata ? 'success' : 'error'}
+                                size="small"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Chip 
+                                label={peer.interested ? 'Yes' : 'No'} 
+                                color={peer.interested ? 'success' : 'warning'}
+                                size="small"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Chip 
+                                label={peer.choking ? 'Yes' : 'No'} 
+                                color={peer.choking ? 'warning' : 'success'}
+                                size="small"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="caption">
+                                {peer.extensions.join(', ') || 'None'}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Chip
+                                label={actionNeeded}
+                                color={actionColor}
+                                size="small"
+                                variant="outlined"
+                              />
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </TableContainer>
@@ -271,11 +334,11 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
             </Accordion>
           )}
           
-          {/* Recommendations */}
+          {/* Smart Recommendations */}
           {diagnosis.recommendations && diagnosis.recommendations.length > 0 && (
             <Box sx={{ mt: 2 }}>
               <Typography variant="subtitle2" gutterBottom>
-                Recommendations:
+                Smart Recommendations:
               </Typography>
               {diagnosis.recommendations.map((rec, index) => (
                 <Alert key={index} severity="info" sx={{ mb: 1 }}>
@@ -289,43 +352,43 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
     );
   }
   
-  // Render metadata exchange result
-  function renderMetadataExchange() {
-    if (!metadataExchange) return null;
+  // Render complete fix result
+  function renderCompleteFixResult() {
+    if (!completeFixResult) return null;
     
     return (
       <Card sx={{ mt: 2 }}>
         <CardContent>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-            <SwapHorizIcon color="primary" />
-            <Typography variant="h6">Enhanced Metadata Exchange</Typography>
+            <AutoFixHighIcon color="primary" />
+            <Typography variant="h6">Complete Metadata Fix</Typography>
             <Chip 
-              label={metadataExchange.success ? 'Success' : 'Failed'} 
-              color={metadataExchange.success ? 'success' : 'error'}
+              label={completeFixResult.success ? 'Success' : 'Failed'} 
+              color={completeFixResult.success ? 'success' : 'error'}
               size="small"
             />
           </Box>
           
-          {metadataExchange.error && (
+          {completeFixResult.error && (
             <Alert severity="error" sx={{ mb: 2 }}>
-              {metadataExchange.error}
+              {completeFixResult.error}
             </Alert>
           )}
           
-          {metadataExchange.success && (
+          {completeFixResult.success && (
             <Alert severity="success" sx={{ mb: 2 }}>
-              🎉 Metadata exchange completed successfully! The torrent should now have file information.
+              🎉 Complete metadata fix successful! The torrent should now have proper metadata exchange.
             </Alert>
           )}
           
-          {metadataExchange.actions && (
+          {completeFixResult.actions && (
             <Accordion>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography>Exchange Actions ({metadataExchange.actions.length})</Typography>
+                <Typography>Fix Actions ({completeFixResult.actions.length})</Typography>
               </AccordionSummary>
               <AccordionDetails>
-                <Box sx={{ maxHeight: 300, overflow: 'auto' }}>
-                  {metadataExchange.actions.map((action, index) => (
+                <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
+                  {completeFixResult.actions.map((action, index) => (
                     <Typography 
                       key={index} 
                       variant="body2" 
@@ -346,22 +409,22 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
             </Accordion>
           )}
           
-          {metadataExchange.finalStatus && (
+          {completeFixResult.finalStatus && (
             <Box sx={{ mt: 2 }}>
               <Typography variant="subtitle2" gutterBottom>Final Status:</Typography>
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                 <Chip 
-                  label={`Ready: ${metadataExchange.finalStatus.ready ? 'Yes' : 'No'}`} 
-                  color={metadataExchange.finalStatus.ready ? 'success' : 'error'}
+                  label={`Ready: ${completeFixResult.finalStatus.ready ? 'Yes' : 'No'}`} 
+                  color={completeFixResult.finalStatus.ready ? 'success' : 'error'}
                   size="small"
                 />
                 <Chip 
-                  label={`Files: ${metadataExchange.finalStatus.files}`} 
-                  color={metadataExchange.finalStatus.files > 0 ? 'success' : 'warning'}
+                  label={`Files: ${completeFixResult.finalStatus.files}`} 
+                  color={completeFixResult.finalStatus.files > 0 ? 'success' : 'warning'}
                   size="small"
                 />
                 <Chip 
-                  label={`Peers: ${metadataExchange.finalStatus.peers}`} 
+                  label={`Peers: ${completeFixResult.finalStatus.peers}`} 
                   size="small"
                 />
               </Box>
@@ -372,43 +435,43 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
     );
   }
   
-  // Render enhanced reload result
-  function renderEnhancedReload() {
-    if (!enhancedReload) return null;
+  // Render seeding fix result
+  function renderSeedingFixResult() {
+    if (!seedingFixResult) return null;
     
     return (
       <Card sx={{ mt: 2 }}>
         <CardContent>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-            <RefreshIcon color="primary" />
-            <Typography variant="h6">Enhanced Torrent Reload</Typography>
+            <SeedingIcon color="primary" />
+            <Typography variant="h6">Seeding Metadata Fix</Typography>
             <Chip 
-              label={enhancedReload.success ? 'Success' : 'Failed'} 
-              color={enhancedReload.success ? 'success' : 'error'}
+              label={seedingFixResult.success ? 'Success' : 'Failed'} 
+              color={seedingFixResult.success ? 'success' : 'error'}
               size="small"
             />
           </Box>
           
-          {enhancedReload.error && (
+          {seedingFixResult.error && (
             <Alert severity="error" sx={{ mb: 2 }}>
-              {enhancedReload.error}
+              {seedingFixResult.error}
             </Alert>
           )}
           
-          {enhancedReload.success && (
+          {seedingFixResult.success && (
             <Alert severity="success" sx={{ mb: 2 }}>
-              🔄 Torrent reloaded successfully with enhanced metadata exchange settings!
+              🌱 Seeding metadata fix applied! This torrent should now properly share metadata with downloading peers.
             </Alert>
           )}
           
-          {enhancedReload.actions && (
+          {seedingFixResult.actions && (
             <Accordion>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography>Reload Actions ({enhancedReload.actions.length})</Typography>
+                <Typography>Seeding Fix Actions ({seedingFixResult.actions.length})</Typography>
               </AccordionSummary>
               <AccordionDetails>
                 <Box sx={{ maxHeight: 300, overflow: 'auto' }}>
-                  {enhancedReload.actions.map((action, index) => (
+                  {seedingFixResult.actions.map((action, index) => (
                     <Typography 
                       key={index} 
                       variant="body2" 
@@ -457,85 +520,69 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
         <Box sx={{ mb: 2 }}>
           <LinearProgress />
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            {loadingType === 'diagnosis' && 'Running diagnosis...'}
-            {loadingType === 'metadata' && 'Forcing enhanced metadata exchange...'}
-            {loadingType === 'reload' && 'Performing enhanced reload...'}
+            {loadingType === 'diagnosis' && 'Running comprehensive diagnosis...'}
+            {loadingType === 'complete-fix' && 'Applying complete metadata exchange fix...'}
+            {loadingType === 'seeding-fix' && 'Fixing seeding metadata sharing...'}
           </Typography>
         </Box>
       )}
       
-      {/* Action Steps */}
+      {/* Enhanced Action Steps */}
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Typography variant="h6" gutterBottom>Troubleshooting Steps</Typography>
-          <Stepper activeStep={activeStep} orientation="vertical">
-            <Step>
-              <StepLabel>
-                <Typography variant="subtitle1">1. Diagnose Issues</Typography>
-              </StepLabel>
-              <StepContent>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                  Analyze the current state of the torrent and identify potential metadata exchange issues.
-                </Typography>
-                <Button
-                  variant="contained"
-                  size="small"
-                  startIcon={loading && loadingType === 'diagnosis' ? <CircularProgress size={16} /> : <NetworkCheckIcon />}
-                  onClick={handleDiagnosis}
-                  disabled={loading}
-                >
-                  Run Diagnosis
-                </Button>
-              </StepContent>
-            </Step>
+          <Typography variant="h6" gutterBottom>Enhanced Troubleshooting Actions</Typography>
+          
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={loading && loadingType === 'diagnosis' ? <CircularProgress size={16} /> : <NetworkCheckIcon />}
+              onClick={handleDiagnosis}
+              disabled={loading}
+            >
+              1. Diagnose Issues
+            </Button>
             
-            <Step>
-              <StepLabel>
-                <Typography variant="subtitle1">2. Force Metadata Exchange</Typography>
-              </StepLabel>
-              <StepContent>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                  Aggressively communicate with peers to request metadata using enhanced protocols.
-                </Typography>
-                <Button
-                  variant="contained"
-                  size="small"
-                  startIcon={loading && loadingType === 'metadata' ? <CircularProgress size={16} /> : <SwapHorizIcon />}
-                  onClick={handleEnhancedMetadataExchange}
-                  disabled={loading}
-                >
-                  Force Metadata Exchange
-                </Button>
-              </StepContent>
-            </Step>
+            <Button
+              variant="contained"
+              size="small"
+              color="warning"
+              startIcon={loading && loadingType === 'complete-fix' ? <CircularProgress size={16} /> : <AutoFixHighIcon />}
+              onClick={handleCompleteMetadataFix}
+              disabled={loading}
+            >
+              2. Complete Metadata Fix
+            </Button>
             
-            <Step>
-              <StepLabel>
-                <Typography variant="subtitle1">3. Enhanced Reload (If Needed)</Typography>
-              </StepLabel>
-              <StepContent>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                  Reload the torrent with optimized settings for better metadata exchange.
-                </Typography>
-                <Button
-                  variant="contained"
-                  size="small"
-                  color="warning"
-                  startIcon={loading && loadingType === 'reload' ? <CircularProgress size={16} /> : <RefreshIcon />}
-                  onClick={handleEnhancedReload}
-                  disabled={loading}
-                >
-                  Enhanced Reload
-                </Button>
-              </StepContent>
-            </Step>
-          </Stepper>
+            <Button
+              variant="contained"
+              size="small"
+              color="success"
+              startIcon={loading && loadingType === 'seeding-fix' ? <CircularProgress size={16} /> : <SeedingIcon />}
+              onClick={handleSeedingFix}
+              disabled={loading}
+            >
+              3. Fix Seeding (Run on Client 1)
+            </Button>
+          </Box>
+          
+          <Alert severity="info" sx={{ mt: 2 }}>
+            <Typography variant="body2">
+              <strong>Recommended workflow:</strong>
+              <br />
+              1. Run "Diagnose Issues" to identify the specific problem
+              <br />
+              2. If downloading (Client 2): Use "Complete Metadata Fix"
+              <br />
+              3. If seeding (Client 1): Use "Fix Seeding" to ensure proper metadata sharing
+            </Typography>
+          </Alert>
         </CardContent>
       </Card>
       
       {renderDiagnosis()}
-      {renderMetadataExchange()}
-      {renderEnhancedReload()}
+      {renderCompleteFixResult()}
+      {renderSeedingFixResult()}
     </Paper>
   );
 }
