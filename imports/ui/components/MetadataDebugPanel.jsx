@@ -42,6 +42,7 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
   const [diagnosis, setDiagnosis] = useState(null);
   const [completeFixResult, setCompleteFixResult] = useState(null);
   const [seedingFixResult, setSeedingFixResult] = useState(null);
+  const [seedingDiagnosis, setSeedingDiagnosis] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadingType, setLoadingType] = useState('');
   const [activeStep, setActiveStep] = useState(0);
@@ -72,16 +73,16 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
     setLoadingType('complete-fix');
     setCompleteFixResult(null);
     
-    Meteor.call('torrents.forceCompleteMetadataFix', torrentHash, function(err, result) {
+    Meteor.call('torrents.emergencyMetadataFix', torrentHash, function(err, result) {
       setLoading(false);
       setLoadingType('');
       
       if (err) {
-        console.error('Complete fix error:', err);
+        console.error('Emergency fix error:', err);
         setCompleteFixResult({ error: err.message });
       } else {
         setCompleteFixResult(result);
-        console.log('Complete fix result:', result);
+        console.log('Emergency fix result:', result);
         
         // Auto-refresh diagnosis after successful fix
         if (result.success) {
@@ -97,19 +98,40 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
     setLoadingType('seeding-fix');
     setSeedingFixResult(null);
     
-    Meteor.call('torrents.fixSeedingMetadata', torrentHash, function(err, result) {
+    Meteor.call('torrents.fixSeedingMetadataCreation', torrentHash, function(err, result) {
       setLoading(false);
       setLoadingType('');
       
       if (err) {
-        console.error('Seeding fix error:', err);
+        console.error('Seeding metadata creation fix error:', err);
         setSeedingFixResult({ error: err.message });
       } else {
         setSeedingFixResult(result);
-        console.log('Seeding fix result:', result);
+        console.log('Seeding metadata creation fix result:', result);
         
         // Auto-refresh diagnosis
         setTimeout(handleDiagnosis, 2000);
+        setTimeout(handleSeedingDiagnosis, 2500);
+      }
+    });
+  }
+  
+  // Diagnose seeding metadata
+  function handleSeedingDiagnosis() {
+    setLoading(true);
+    setLoadingType('seeding-diagnosis');
+    setSeedingDiagnosis(null);
+    
+    Meteor.call('torrents.diagnoseSeedingMetadata', torrentHash, function(err, result) {
+      setLoading(false);
+      setLoadingType('');
+      
+      if (err) {
+        console.error('Seeding diagnosis error:', err);
+        setSeedingDiagnosis({ error: err.message });
+      } else {
+        setSeedingDiagnosis(result);
+        console.log('Seeding diagnosis result:', result);
       }
     });
   }
@@ -361,7 +383,7 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
         <CardContent>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
             <AutoFixHighIcon color="primary" />
-            <Typography variant="h6">Complete Metadata Fix</Typography>
+            <Typography variant="h6">Emergency Metadata Fix</Typography>
             <Chip 
               label={completeFixResult.success ? 'Success' : 'Failed'} 
               color={completeFixResult.success ? 'success' : 'error'}
@@ -377,7 +399,7 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
           
           {completeFixResult.success && (
             <Alert severity="success" sx={{ mb: 2 }}>
-              🎉 Complete metadata fix successful! The torrent should now have proper metadata exchange.
+              🚨 Emergency metadata fix successful! Fixed metadata exchange without any DHT operations.
             </Alert>
           )}
           
@@ -435,7 +457,94 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
     );
   }
   
-  // Render seeding fix result
+  // Render seeding diagnosis
+  function renderSeedingDiagnosis() {
+    if (!seedingDiagnosis) return null;
+    
+    return (
+      <Card sx={{ mt: 2 }}>
+        <CardContent>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+            <SeedingIcon color="info" />
+            <Typography variant="h6">Seeding Metadata Diagnosis</Typography>
+            <Chip 
+              label={seedingDiagnosis.issues?.length > 0 ? `${seedingDiagnosis.issues.length} Issues` : 'Healthy'} 
+              color={seedingDiagnosis.issues?.length > 0 ? 'error' : 'success'}
+              size="small"
+            />
+          </Box>
+          
+          {seedingDiagnosis.error && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {seedingDiagnosis.error}
+            </Alert>
+          )}
+          
+          {/* Seeding Status */}
+          {seedingDiagnosis.diagnosis && (
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>Seeding Status:</Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                <Chip 
+                  label={`Files: ${seedingDiagnosis.diagnosis.files}`} 
+                  color={seedingDiagnosis.diagnosis.files > 0 ? 'success' : 'error'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Has Metadata: ${seedingDiagnosis.diagnosis.hasMetadata ? 'Yes' : 'No'}`} 
+                  color={seedingDiagnosis.diagnosis.hasMetadata ? 'success' : 'error'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Metadata Size: ${seedingDiagnosis.diagnosis.metadataSize} bytes`} 
+                  color={seedingDiagnosis.diagnosis.metadataSize > 0 ? 'success' : 'error'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Peers: ${seedingDiagnosis.diagnosis.peers}`} 
+                  color={seedingDiagnosis.diagnosis.peers > 0 ? 'success' : 'warning'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Wires with Metadata: ${seedingDiagnosis.diagnosis.wiresWithMetadata || 0}/${seedingDiagnosis.diagnosis.wires}`} 
+                  color={(seedingDiagnosis.diagnosis.wiresWithMetadata || 0) > 0 ? 'success' : 'warning'}
+                  size="small"
+                />
+              </Box>
+            </Box>
+          )}
+          
+          {/* Critical Issues */}
+          {seedingDiagnosis.issues && seedingDiagnosis.issues.length > 0 && (
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="subtitle2" gutterBottom color="error">
+                Critical Seeding Issues:
+              </Typography>
+              {seedingDiagnosis.issues.map((issue, index) => (
+                <Alert key={index} severity="error" sx={{ mb: 1 }}>
+                  {issue}
+                </Alert>
+              ))}
+            </Box>
+          )}
+          
+          {/* Recommendations */}
+          {seedingDiagnosis.recommendations && seedingDiagnosis.recommendations.length > 0 && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>
+                Seeding Recommendations:
+              </Typography>
+              {seedingDiagnosis.recommendations.map((rec, index) => (
+                <Alert key={index} severity="info" sx={{ mb: 1 }}>
+                  {rec}
+                </Alert>
+              ))}
+            </Box>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
   function renderSeedingFixResult() {
     if (!seedingFixResult) return null;
     
@@ -444,7 +553,7 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
         <CardContent>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
             <SeedingIcon color="primary" />
-            <Typography variant="h6">Seeding Metadata Fix</Typography>
+            <Typography variant="h6">Simple Seeding Fix</Typography>
             <Chip 
               label={seedingFixResult.success ? 'Success' : 'Failed'} 
               color={seedingFixResult.success ? 'success' : 'error'}
@@ -460,7 +569,7 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
           
           {seedingFixResult.success && (
             <Alert severity="success" sx={{ mb: 2 }}>
-              🌱 Seeding metadata fix applied! This torrent should now properly share metadata with downloading peers.
+              🌱 Seeding metadata creation fix applied! This torrent should now have proper metadata object and share it correctly.
             </Alert>
           )}
           
@@ -546,12 +655,23 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
             <Button
               variant="contained"
               size="small"
+              color="info"
+              startIcon={loading && loadingType === 'seeding-diagnosis' ? <CircularProgress size={16} /> : <SeedingIcon />}
+              onClick={handleSeedingDiagnosis}
+              disabled={loading}
+            >
+              1b. Diagnose Seeding
+            </Button>
+            
+            <Button
+              variant="contained"
+              size="small"
               color="warning"
               startIcon={loading && loadingType === 'complete-fix' ? <CircularProgress size={16} /> : <AutoFixHighIcon />}
               onClick={handleCompleteMetadataFix}
               disabled={loading}
             >
-              2. Complete Metadata Fix
+              2. Emergency Fix (Client 2)
             </Button>
             
             <Button
@@ -562,25 +682,26 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
               onClick={handleSeedingFix}
               disabled={loading}
             >
-              3. Fix Seeding (Run on Client 1)
+              3. Fix Seeding Metadata (Client 1)
             </Button>
           </Box>
           
           <Alert severity="info" sx={{ mt: 2 }}>
             <Typography variant="body2">
-              <strong>Recommended workflow:</strong>
+              <strong>NEW DISCOVERY - Recommended workflow:</strong>
               <br />
-              1. Run "Diagnose Issues" to identify the specific problem
+              1. Run "Diagnose Issues" and "Diagnose Seeding" to identify the specific problem
               <br />
-              2. If downloading (Client 2): Use "Complete Metadata Fix"
+              2. **CRITICAL**: If seeding (Client 1), run "Fix Seeding Metadata" FIRST - this is likely the root cause
               <br />
-              3. If seeding (Client 1): Use "Fix Seeding" to ensure proper metadata sharing
+              3. If downloading (Client 2), then use "Emergency Fix" after Client 1 is fixed
             </Typography>
           </Alert>
         </CardContent>
       </Card>
       
       {renderDiagnosis()}
+      {renderSeedingDiagnosis()}
       {renderCompleteFixResult()}
       {renderSeedingFixResult()}
     </Paper>

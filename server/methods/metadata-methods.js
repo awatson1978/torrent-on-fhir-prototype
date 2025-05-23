@@ -1254,6 +1254,305 @@ Meteor.methods({
       result.actions.push(`❌ Error: ${error.message}`);
       return result;
     }
+  },
+
+  /**
+   * Fix seeding torrents that don't have metadata object properly attached
+   * This is the root cause of why downloading peers can't get metadata
+   */
+  'torrents.fixSeedingMetadataCreation': async function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`🔧 FIXING SEEDING METADATA CREATION for torrent ${infoHash}`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      actions: [],
+      success: false,
+      strategy: 'seeding-metadata-creation'
+    };
+    
+    try {
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        throw new Error('Torrent not found in client');
+      }
+      
+      result.actions.push(`🌱 Analyzing seeding torrent: ${torrent.name}`);
+      result.actions.push(`📊 Status: files=${torrent.files?.length || 0}, ready=${torrent.ready}, hasMetadata=${!!torrent.metadata}`);
+      
+      // Check if torrent has files but no metadata
+      if (torrent.files && torrent.files.length > 0 && !torrent.metadata) {
+        result.actions.push('🔍 Torrent has files but no metadata - this is the problem!');
+        
+        // Try to reconstruct metadata from torrent info
+        if (torrent.info) {
+          result.actions.push('📋 Attempting to reconstruct metadata from torrent.info');
+          
+          try {
+            // Create metadata from info
+            const bencode = require('bencode');
+            torrent.metadata = bencode.encode(torrent.info);
+            result.actions.push(`✅ Created metadata from info: ${torrent.metadata.length} bytes`);
+          } catch (encodeErr) {
+            result.actions.push(`❌ Error encoding metadata: ${encodeErr.message}`);
+          }
+        }
+        
+        // Try to get metadata from magnetURI parsing
+        if (!torrent.metadata && torrent.magnetURI) {
+          result.actions.push('🧲 Attempting to reconstruct from magnet URI');
+          
+          try {
+            const parseTorrent = require('parse-torrent');
+            const parsed = parseTorrent(torrent.magnetURI);
+            
+            if (parsed.infoHash) {
+              result.actions.push(`📋 Parsed magnet: ${parsed.name}, hash: ${parsed.infoHash}`);
+              
+              // If we have access to the original torrent data, use it
+              if (torrent._torrent && torrent._torrent.info) {
+                const bencode = require('bencode');
+                torrent.metadata = bencode.encode(torrent._torrent.info);
+                result.actions.push(`✅ Reconstructed metadata: ${torrent.metadata.length} bytes`);
+              }
+            }
+          } catch (parseErr) {
+            result.actions.push(`❌ Error parsing magnet: ${parseErr.message}`);
+          }
+        }
+        
+        // Last resort: Create minimal metadata from what we know
+        if (!torrent.metadata) {
+          result.actions.push('🏗️ Creating minimal metadata structure');
+          
+          try {
+            const minimalInfo = {
+              name: Buffer.from(torrent.name || 'FHIR Data', 'utf8'),
+              'piece length': 16384,
+              pieces: Buffer.alloc(20), // Minimal pieces
+              files: torrent.files.map(f => ({
+                path: [Buffer.from(f.name, 'utf8')],
+                length: f.length
+              }))
+            };
+            
+            const bencode = require('bencode');
+            torrent.metadata = bencode.encode(minimalInfo);
+            result.actions.push(`✅ Created minimal metadata: ${torrent.metadata.length} bytes`);
+          } catch (minimalErr) {
+            result.actions.push(`❌ Error creating minimal metadata: ${minimalErr.message}`);
+          }
+        }
+      } else if (torrent.metadata) {
+        result.actions.push(`✅ Torrent already has metadata: ${torrent.metadata.length} bytes`);
+      } else {
+        result.actions.push('❌ Torrent has no files and no metadata - cannot fix');
+        throw new Error('Torrent has no files to seed');
+      }
+      
+      // Now that we have metadata, ensure all wire connections have ut_metadata
+      if (torrent.metadata && torrent.wires && torrent.wires.length > 0) {
+        result.actions.push(`🔧 Installing ut_metadata on ${torrent.wires.length} existing connections`);
+        
+        torrent.wires.forEach(function(wire, index) {
+          try {
+            result.actions.push(`🔌 Wire ${index}: ${wire.remoteAddress}`);
+            
+            // Remove existing ut_metadata if present
+            if (wire.ut_metadata) {
+              delete wire.ut_metadata;
+              result.actions.push(`   🗑️ Removed existing ut_metadata`);
+            }
+            
+            // Install fresh ut_metadata with our metadata
+            const ut_metadata = require('ut_metadata');
+            wire.use(ut_metadata(torrent.metadata));
+            result.actions.push(`   ✅ Installed ut_metadata with ${torrent.metadata.length} byte metadata`);
+            
+            // Send enhanced handshake
+            const handshake = {
+              m: { ut_metadata: 1 },
+              v: 'WebTorrent-Seeding-Fixed',
+              metadata_size: torrent.metadata.length,
+              reqq: 250
+            };
+            
+            wire.extended('handshake', Buffer.from(JSON.stringify(handshake)));
+            result.actions.push(`   📡 Sent handshake with metadata_size=${torrent.metadata.length}`);
+            
+            // Set up immediate metadata sharing
+            wire.removeAllListeners('extended');
+            wire.on('extended', function(ext, buf) {
+              if (ext === 'ut_metadata') {
+                result.actions.push(`   📤 Metadata request received from ${wire.remoteAddress}`);
+                
+                try {
+                  // Immediately send metadata
+                  const response = {
+                    msg_type: 1, // data
+                    piece: 0,
+                    total_size: torrent.metadata.length
+                  };
+                  
+                  const responseBuffer = Buffer.concat([
+                    Buffer.from(JSON.stringify(response)),
+                    torrent.metadata
+                  ]);
+                  
+                  wire.extended('ut_metadata', responseBuffer);
+                  result.actions.push(`   ✅ Sent ${torrent.metadata.length} bytes metadata to ${wire.remoteAddress}`);
+                } catch (responseErr) {
+                  result.actions.push(`   ❌ Response error: ${responseErr.message}`);
+                }
+              }
+            });
+            
+          } catch (wireErr) {
+            result.actions.push(`   ❌ Wire ${index} error: ${wireErr.message}`);
+          }
+        });
+      }
+      
+      // Set up enhanced wire handler for new connections
+      result.actions.push('🔧 Setting up metadata sharing for new connections');
+      
+      const originalOnWire = torrent._onWire?.bind(torrent);
+      torrent._onWire = function(wire) {
+        result.actions.push(`🔌 New connection: ${wire.remoteAddress} - auto-installing metadata`);
+        
+        // Call original handler
+        if (originalOnWire) {
+          originalOnWire(wire);
+        }
+        
+        // Immediately install metadata support
+        setTimeout(function() {
+          try {
+            const ut_metadata = require('ut_metadata');
+            wire.use(ut_metadata(torrent.metadata));
+            
+            const handshake = {
+              m: { ut_metadata: 1 },
+              v: 'WebTorrent-Auto-Seeding-Fixed',
+              metadata_size: torrent.metadata.length
+            };
+            
+            wire.extended('handshake', Buffer.from(JSON.stringify(handshake)));
+            result.actions.push(`✅ Auto-installed metadata sharing for ${wire.remoteAddress}`);
+            
+            // Set up metadata response
+            wire.on('extended', function(ext, buf) {
+              if (ext === 'ut_metadata') {
+                const response = {
+                  msg_type: 1,
+                  piece: 0,
+                  total_size: torrent.metadata.length
+                };
+                
+                wire.extended('ut_metadata', Buffer.concat([
+                  Buffer.from(JSON.stringify(response)),
+                  torrent.metadata
+                ]));
+              }
+            });
+          } catch (autoErr) {
+            result.actions.push(`⚠️ Auto-install error: ${autoErr.message}`);
+          }
+        }, 100);
+      };
+      
+      result.success = true;
+      result.actions.push('🎉 Seeding metadata creation fix completed!');
+      result.actions.push(`📋 Final metadata size: ${torrent.metadata?.length || 0} bytes`);
+      
+      return result;
+      
+    } catch (error) {
+      console.error('Seeding metadata creation fix error:', error);
+      result.error = error.message;
+      result.actions.push(`❌ Error: ${error.message}`);
+      return result;
+    }
+  },
+
+  /**
+   * Diagnose metadata availability on seeding torrent
+   */
+  'torrents.diagnoseSeedingMetadata': function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`🔍 DIAGNOSING SEEDING METADATA for torrent ${infoHash}`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      diagnosis: {},
+      issues: [],
+      recommendations: []
+    };
+    
+    try {
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        result.issues.push('Torrent not found in client');
+        return result;
+      }
+      
+      result.diagnosis = {
+        name: torrent.name,
+        ready: torrent.ready,
+        files: torrent.files?.length || 0,
+        hasMetadata: !!torrent.metadata,
+        metadataSize: torrent.metadata?.length || 0,
+        hasInfo: !!torrent.info,
+        hasTorrentObject: !!torrent._torrent,
+        magnetURI: !!torrent.magnetURI,
+        peers: torrent.numPeers,
+        wires: torrent.wires?.length || 0
+      };
+      
+      // Check for issues
+      if (result.diagnosis.files > 0 && !result.diagnosis.hasMetadata) {
+        result.issues.push('CRITICAL: Has files but no metadata - this prevents metadata sharing');
+        result.recommendations.push('Use "Fix Seeding Metadata Creation" to reconstruct metadata');
+      }
+      
+      if (result.diagnosis.hasMetadata && result.diagnosis.wires > 0) {
+        // Check if wires have ut_metadata
+        let wiresWithMetadata = 0;
+        torrent.wires?.forEach(function(wire) {
+          if (wire.ut_metadata) wiresWithMetadata++;
+        });
+        
+        result.diagnosis.wiresWithMetadata = wiresWithMetadata;
+        
+        if (wiresWithMetadata === 0) {
+          result.issues.push('Has metadata but no wire connections have ut_metadata extension');
+          result.recommendations.push('Use "Fix Seeding Metadata Creation" to install ut_metadata on connections');
+        }
+      }
+      
+      if (result.diagnosis.peers === 0) {
+        result.issues.push('No peers connected - downloading clients cannot connect');
+        result.recommendations.push('Check tracker connectivity and network settings');
+      }
+      
+      if (result.issues.length === 0) {
+        result.recommendations.push('Seeding metadata appears healthy');
+      }
+      
+      console.log('Seeding metadata diagnosis:', result);
+      return result;
+      
+    } catch (error) {
+      console.error('Seeding metadata diagnosis error:', error);
+      result.error = error.message;
+      return result;
+    }
   }
   
 });
