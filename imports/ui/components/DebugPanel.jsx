@@ -1,3 +1,5 @@
+// imports/ui/components/MetadataDebugPanel.jsx - Updated with protocol fixes
+
 import React, { useState } from 'react';
 import { Meteor } from 'meteor/meteor';
 import Paper from '@mui/material/Paper';
@@ -6,10 +8,6 @@ import Button from '@mui/material/Button';
 import Box from '@mui/material/Box';
 import Alert from '@mui/material/Alert';
 import CircularProgress from '@mui/material/CircularProgress';
-import Stepper from '@mui/material/Stepper';
-import Step from '@mui/material/Step';
-import StepLabel from '@mui/material/StepLabel';
-import StepContent from '@mui/material/StepContent';
 import Accordion from '@mui/material/Accordion';
 import AccordionSummary from '@mui/material/AccordionSummary';
 import AccordionDetails from '@mui/material/AccordionDetails';
@@ -37,14 +35,15 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import WarningIcon from '@mui/icons-material/Warning';
 import SeedingIcon from '@mui/icons-material/CloudUpload';
+import SettingsEthernetIcon from '@mui/icons-material/SettingsEthernet';
 
 function MetadataDebugPanel({ torrentHash, torrentName }) {
   const [diagnosis, setDiagnosis] = useState(null);
-  const [completeFixResult, setCompleteFixResult] = useState(null);
-  const [seedingFixResult, setSeedingFixResult] = useState(null);
+  const [protocolDebug, setProtocolDebug] = useState(null);
+  const [protocolFixResult, setProtocolFixResult] = useState(null);
+  const [alternativeFixResult, setAlternativeFixResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadingType, setLoadingType] = useState('');
-  const [activeStep, setActiveStep] = useState(0);
   
   // Run diagnosis
   function handleDiagnosis() {
@@ -66,81 +65,92 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
     });
   }
   
-  // Complete metadata fix
-  function handleCompleteMetadataFix() {
+  // Debug extended protocol
+  function handleProtocolDebug() {
     setLoading(true);
-    setLoadingType('complete-fix');
-    setCompleteFixResult(null);
+    setLoadingType('protocol-debug');
+    setProtocolDebug(null);
     
-    Meteor.call('torrents.focusedMetadataFix', torrentHash, function(err, result) {
+    Meteor.call('torrents.debugExtendedProtocol', torrentHash, function(err, result) {
       setLoading(false);
       setLoadingType('');
       
       if (err) {
-        console.error('Focused fix error:', err);
-        setCompleteFixResult({ error: err.message });
+        console.error('Protocol debug error:', err);
+        setProtocolDebug({ error: err.message });
       } else {
-        setCompleteFixResult(result);
-        console.log('Focused fix result:', result);
+        setProtocolDebug(result);
+        console.log('Protocol debug result:', result);
+      }
+    });
+  }
+  
+  // Apply protocol fix
+  function handleProtocolFix() {
+    setLoading(true);
+    setLoadingType('protocol-fix');
+    setProtocolFixResult(null);
+    
+    Meteor.call('torrents.fixExtendedProtocol', torrentHash, function(err, result) {
+      setLoading(false);
+      setLoadingType('');
+      
+      if (err) {
+        console.error('Protocol fix error:', err);
+        setProtocolFixResult({ error: err.message });
+      } else {
+        setProtocolFixResult(result);
+        console.log('Protocol fix result:', result);
         
-        // Auto-refresh diagnosis after successful fix
+        // Auto-refresh diagnosis after fix
         if (result.success) {
-          setTimeout(handleDiagnosis, 3000);
+          setTimeout(handleDiagnosis, 2000);
+          setTimeout(handleProtocolDebug, 2500);
         }
       }
     });
   }
   
-  // Fix seeding metadata
-  function handleSeedingFix() {
+  // Apply alternative fix
+  function handleAlternativeFix() {
     setLoading(true);
-    setLoadingType('seeding-fix');
-    setSeedingFixResult(null);
+    setLoadingType('alternative-fix');
+    setAlternativeFixResult(null);
     
-    Meteor.call('torrents.simpleSeedingFix', torrentHash, function(err, result) {
+    Meteor.call('torrents.alternativeMetadataFix', torrentHash, function(err, result) {
       setLoading(false);
       setLoadingType('');
       
       if (err) {
-        console.error('Simple seeding fix error:', err);
-        setSeedingFixResult({ error: err.message });
+        console.error('Alternative fix error:', err);
+        setAlternativeFixResult({ error: err.message });
       } else {
-        setSeedingFixResult(result);
-        console.log('Simple seeding fix result:', result);
+        setAlternativeFixResult(result);
+        console.log('Alternative fix result:', result);
         
         // Auto-refresh diagnosis
-        setTimeout(handleDiagnosis, 2000);
+        if (result.success) {
+          setTimeout(handleDiagnosis, 2000);
+          setTimeout(handleProtocolDebug, 2500);
+        }
       }
     });
   }
   
-  // Get severity for diagnosis issues
-  function getDiagnosticSeverity() {
-    if (!diagnosis) return 'info';
-    if (diagnosis.error) return 'error';
-    if (diagnosis.issues && diagnosis.issues.length > 0) {
-      const criticalIssues = diagnosis.issues.filter(issue => 
-        issue.includes('not found') || 
-        issue.includes('No peers') ||
-        issue.includes('protocol issue') ||
-        issue.includes('does not support ut_metadata')
-      );
-      return criticalIssues.length > 0 ? 'error' : 'warning';
-    }
-    return 'success';
-  }
-  
-  // Determine if this is likely a seeding torrent
-  function isLikelySeeding() {
-    return diagnosis?.basic?.files > 0 && diagnosis?.basic?.ready;
+  // Check if this shows the "Unrecognized extension" error
+  function hasExtensionError() {
+    return protocolFixResult?.actions?.some(action => 
+      action.includes('Unrecognized extension')
+    ) || alternativeFixResult?.actions?.some(action =>
+      action.includes('Unrecognized extension')
+    );
   }
   
   // Render diagnosis results
   function renderDiagnosis() {
     if (!diagnosis) return null;
     
-    const severity = getDiagnosticSeverity();
-    const likelySeeding = isLikelySeeding();
+    const hasIssues = diagnosis.issues && diagnosis.issues.length > 0;
     
     return (
       <Card sx={{ mt: 2 }}>
@@ -149,19 +159,10 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
             <NetworkCheckIcon color="primary" />
             <Typography variant="h6">Metadata Exchange Diagnosis</Typography>
             <Chip 
-              label={severity === 'success' ? 'Healthy' : severity === 'warning' ? 'Issues Found' : 'Critical Issues'} 
-              color={severity}
+              label={hasIssues ? `${diagnosis.issues.length} Issues` : 'Healthy'} 
+              color={hasIssues ? 'error' : 'success'}
               size="small"
             />
-            {likelySeeding && (
-              <Chip 
-                icon={<SeedingIcon />}
-                label="Seeding Mode" 
-                color="info"
-                size="small"
-                variant="outlined"
-              />
-            )}
           </Box>
           
           {diagnosis.error && (
@@ -204,7 +205,7 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
             </Box>
           )}
           
-          {/* Issues with specific guidance */}
+          {/* Issues */}
           {diagnosis.issues && diagnosis.issues.length > 0 && (
             <Accordion>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -214,43 +215,68 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
                 </Box>
               </AccordionSummary>
               <AccordionDetails>
-                {diagnosis.issues.map((issue, index) => {
-                  let guidance = '';
-                  let severity = 'warning';
-                  
-                  if (issue.includes('does not support ut_metadata')) {
-                    guidance = '→ This indicates the seeding peer is not properly advertising metadata support. Use "Fix Seeding Metadata" on the seeding client.';
-                    severity = 'error';
-                  } else if (issue.includes('not interested')) {
-                    guidance = '→ The peer connection handshake needs to be enhanced. Try "Complete Metadata Fix".';
-                    severity = 'warning';
-                  } else if (issue.includes('No connected peers support metadata')) {
-                    guidance = '→ All connected peers lack metadata support. This is a critical protocol issue requiring complete fix.';
-                    severity = 'error';
-                  }
-                  
-                  return (
-                    <Alert key={index} severity={severity} sx={{ mb: 1 }}>
-                      <Typography variant="body2">{issue}</Typography>
-                      {guidance && (
-                        <Typography variant="caption" sx={{ mt: 1, display: 'block', fontStyle: 'italic' }}>
-                          {guidance}
-                        </Typography>
-                      )}
-                    </Alert>
-                  );
-                })}
+                {diagnosis.issues.map((issue, index) => (
+                  <Alert key={index} severity="warning" sx={{ mb: 1 }}>
+                    <Typography variant="body2">{issue}</Typography>
+                  </Alert>
+                ))}
               </AccordionDetails>
             </Accordion>
           )}
+        </CardContent>
+      </Card>
+    );
+  }
+  
+  // Render protocol debug results
+  function renderProtocolDebug() {
+    if (!protocolDebug) return null;
+    
+    return (
+      <Card sx={{ mt: 2 }}>
+        <CardContent>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+            <SettingsEthernetIcon color="primary" />
+            <Typography variant="h6">Extended Protocol Debug</Typography>
+          </Box>
           
-          {/* Peer Analysis */}
-          {diagnosis.peerAnalysis && diagnosis.peerAnalysis.length > 0 && (
+          {protocolDebug.diagnosis?.error && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {protocolDebug.diagnosis.error}
+            </Alert>
+          )}
+          
+          {/* Protocol Status */}
+          {protocolDebug.diagnosis && (
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>Protocol Status:</Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                <Chip 
+                  label={`Has Metadata: ${protocolDebug.diagnosis.hasMetadata ? 'Yes' : 'No'}`} 
+                  color={protocolDebug.diagnosis.hasMetadata ? 'success' : 'error'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Metadata Size: ${protocolDebug.diagnosis.metadataSize} bytes`} 
+                  color={protocolDebug.diagnosis.metadataSize > 0 ? 'success' : 'warning'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Wires: ${protocolDebug.diagnosis.wires}`} 
+                  color={protocolDebug.diagnosis.wires > 0 ? 'success' : 'warning'}
+                  size="small"
+                />
+              </Box>
+            </Box>
+          )}
+          
+          {/* Wire Details */}
+          {protocolDebug.wireDetails && protocolDebug.wireDetails.length > 0 && (
             <Accordion>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <SwapHorizIcon color="primary" />
-                  <Typography>Peer Analysis ({diagnosis.peerAnalysis.length} peers)</Typography>
+                  <Typography>Wire Connections ({protocolDebug.wireDetails.length})</Typography>
                 </Box>
               </AccordionSummary>
               <AccordionDetails>
@@ -259,136 +285,103 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
                     <TableHead>
                       <TableRow>
                         <TableCell>Address</TableCell>
-                        <TableCell>Metadata Support</TableCell>
-                        <TableCell>Interested</TableCell>
-                        <TableCell>Choking</TableCell>
+                        <TableCell>Extended Protocol</TableCell>
+                        <TableCell>ut_metadata</TableCell>
+                        <TableCell>Interest/Choke</TableCell>
                         <TableCell>Extensions</TableCell>
-                        <TableCell>Action Needed</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {diagnosis.peerAnalysis.map((peer, index) => {
-                        // Determine the specific issue and action needed
-                        let actionNeeded = 'OK';
-                        let actionColor = 'success';
-                        
-                        if (!peer.supportsMetadata) {
-                          if (peer.extensions.includes('extended')) {
-                            actionNeeded = 'Force ut_metadata';
-                            actionColor = 'error';
-                          } else {
-                            actionNeeded = 'No extended protocol';
-                            actionColor = 'error';
-                          }
-                        } else if (!peer.interested) {
-                          actionNeeded = 'Force handshake';
-                          actionColor = 'warning';
-                        }
-                        
-                        return (
-                          <TableRow key={index}>
-                            <TableCell sx={{ fontFamily: 'monospace' }}>
-                              {peer.address}:{peer.port}
-                            </TableCell>
-                            <TableCell>
+                      {protocolDebug.wireDetails.map((wire, index) => (
+                        <TableRow key={index}>
+                          <TableCell sx={{ fontFamily: 'monospace' }}>
+                            {wire.address}:{wire.port}
+                          </TableCell>
+                          <TableCell>
+                            <Chip 
+                              label={wire.supportsExtended ? 'Yes' : 'No'} 
+                              color={wire.supportsExtended ? 'success' : 'error'}
+                              size="small"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Box>
                               <Chip 
-                                label={peer.supportsMetadata ? 'Yes' : 'No'} 
-                                color={peer.supportsMetadata ? 'success' : 'error'}
+                                label={wire.supportsUtMetadata ? 'Peer Supports' : 'No Support'} 
+                                color={wire.supportsUtMetadata ? 'success' : 'error'}
                                 size="small"
+                                sx={{ mb: 0.5 }}
                               />
-                            </TableCell>
-                            <TableCell>
+                              <br />
                               <Chip 
-                                label={peer.interested ? 'Yes' : 'No'} 
-                                color={peer.interested ? 'success' : 'warning'}
+                                label={wire.hasUtMetadata ? 'Extension Active' : 'Not Active'} 
+                                color={wire.hasUtMetadata ? 'success' : 'warning'}
                                 size="small"
                               />
-                            </TableCell>
-                            <TableCell>
-                              <Chip 
-                                label={peer.choking ? 'Yes' : 'No'} 
-                                color={peer.choking ? 'warning' : 'success'}
-                                size="small"
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <Typography variant="caption">
-                                {peer.extensions.join(', ') || 'None'}
-                              </Typography>
-                            </TableCell>
-                            <TableCell>
-                              <Chip
-                                label={actionNeeded}
-                                color={actionColor}
-                                size="small"
-                                variant="outlined"
-                              />
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
+                            </Box>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="caption">
+                              Interest: {wire.amInterested ? '✓' : '✗'} / {wire.peerInterested ? '✓' : '✗'}
+                              <br />
+                              Choke: {wire.amChoking ? '✗' : '✓'} / {wire.peerChoking ? '✗' : '✓'}
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="caption">
+                              {wire.peerExtensions.join(', ') || 'None'}
+                            </Typography>
+                          </TableCell>
+                        </TableRow>
+                      ))}
                     </TableBody>
                   </Table>
                 </TableContainer>
               </AccordionDetails>
             </Accordion>
           )}
-          
-          {/* Smart Recommendations */}
-          {diagnosis.recommendations && diagnosis.recommendations.length > 0 && (
-            <Box sx={{ mt: 2 }}>
-              <Typography variant="subtitle2" gutterBottom>
-                Smart Recommendations:
-              </Typography>
-              {diagnosis.recommendations.map((rec, index) => (
-                <Alert key={index} severity="info" sx={{ mb: 1 }}>
-                  {rec}
-                </Alert>
-              ))}
-            </Box>
-          )}
         </CardContent>
       </Card>
     );
   }
   
-  // Render complete fix result
-  function renderCompleteFixResult() {
-    if (!completeFixResult) return null;
+  // Render fix results
+  function renderFixResult(result, title, icon) {
+    if (!result) return null;
     
     return (
       <Card sx={{ mt: 2 }}>
         <CardContent>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-            <AutoFixHighIcon color="primary" />
-            <Typography variant="h6">Focused Metadata Fix</Typography>
+            {icon}
+            <Typography variant="h6">{title}</Typography>
             <Chip 
-              label={completeFixResult.success ? 'Success' : 'Failed'} 
-              color={completeFixResult.success ? 'success' : 'error'}
+              label={result.success ? 'Success' : 'Failed'} 
+              color={result.success ? 'success' : 'error'}
               size="small"
             />
           </Box>
           
-          {completeFixResult.error && (
+          {result.error && (
             <Alert severity="error" sx={{ mb: 2 }}>
-              {completeFixResult.error}
+              {result.error}
             </Alert>
           )}
           
-          {completeFixResult.success && (
+          {result.success && (
             <Alert severity="success" sx={{ mb: 2 }}>
-              🎉 Focused metadata fix successful! The torrent should now have proper metadata exchange without DHT issues.
+              Fix applied successfully! The torrent should now have proper metadata exchange.
             </Alert>
           )}
           
-          {completeFixResult.actions && (
+          {result.actions && (
             <Accordion>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography>Fix Actions ({completeFixResult.actions.length})</Typography>
+                <Typography>Fix Actions ({result.actions.length})</Typography>
               </AccordionSummary>
               <AccordionDetails>
                 <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
-                  {completeFixResult.actions.map((action, index) => (
+                  {result.actions.map((action, index) => (
                     <Typography 
                       key={index} 
                       variant="body2" 
@@ -409,87 +402,26 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
             </Accordion>
           )}
           
-          {completeFixResult.finalStatus && (
+          {result.finalStatus && (
             <Box sx={{ mt: 2 }}>
               <Typography variant="subtitle2" gutterBottom>Final Status:</Typography>
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                 <Chip 
-                  label={`Ready: ${completeFixResult.finalStatus.ready ? 'Yes' : 'No'}`} 
-                  color={completeFixResult.finalStatus.ready ? 'success' : 'error'}
+                  label={`Ready: ${result.finalStatus.ready ? 'Yes' : 'No'}`} 
+                  color={result.finalStatus.ready ? 'success' : 'error'}
                   size="small"
                 />
                 <Chip 
-                  label={`Files: ${completeFixResult.finalStatus.files}`} 
-                  color={completeFixResult.finalStatus.files > 0 ? 'success' : 'warning'}
+                  label={`Files: ${result.finalStatus.files}`} 
+                  color={result.finalStatus.files > 0 ? 'success' : 'warning'}
                   size="small"
                 />
                 <Chip 
-                  label={`Peers: ${completeFixResult.finalStatus.peers}`} 
+                  label={`Peers: ${result.finalStatus.peers}`} 
                   size="small"
                 />
               </Box>
             </Box>
-          )}
-        </CardContent>
-      </Card>
-    );
-  }
-  
-  // Render seeding fix result
-  function renderSeedingFixResult() {
-    if (!seedingFixResult) return null;
-    
-    return (
-      <Card sx={{ mt: 2 }}>
-        <CardContent>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-            <SeedingIcon color="primary" />
-            <Typography variant="h6">Simple Seeding Fix</Typography>
-            <Chip 
-              label={seedingFixResult.success ? 'Success' : 'Failed'} 
-              color={seedingFixResult.success ? 'success' : 'error'}
-              size="small"
-            />
-          </Box>
-          
-          {seedingFixResult.error && (
-            <Alert severity="error" sx={{ mb: 2 }}>
-              {seedingFixResult.error}
-            </Alert>
-          )}
-          
-          {seedingFixResult.success && (
-            <Alert severity="success" sx={{ mb: 2 }}>
-              🌱 Simple seeding fix applied! This torrent should now properly share metadata without complex protocol issues.
-            </Alert>
-          )}
-          
-          {seedingFixResult.actions && (
-            <Accordion>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography>Seeding Fix Actions ({seedingFixResult.actions.length})</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                <Box sx={{ maxHeight: 300, overflow: 'auto' }}>
-                  {seedingFixResult.actions.map((action, index) => (
-                    <Typography 
-                      key={index} 
-                      variant="body2" 
-                      sx={{ 
-                        fontFamily: 'monospace', 
-                        mb: 0.5,
-                        fontSize: '0.8rem',
-                        color: action.includes('❌') ? 'error.main' : 
-                               action.includes('✅') ? 'success.main' :
-                               action.includes('⚠️') ? 'warning.main' : 'text.primary'
-                      }}
-                    >
-                      {action}
-                    </Typography>
-                  ))}
-                </Box>
-              </AccordionDetails>
-            </Accordion>
           )}
         </CardContent>
       </Card>
@@ -506,12 +438,12 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
         <BugReportIcon color="info" />
         <Typography variant="h6">
-          Enhanced Metadata Debug Panel
+          Enhanced Protocol Debug Panel
         </Typography>
       </Box>
       
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Debugging metadata exchange for: <strong>{torrentName}</strong>
+        Debugging WebTorrent extended protocol for: <strong>{torrentName}</strong>
         <br />
         Hash: <span style={{ fontFamily: 'monospace' }}>{torrentHash}</span>
       </Typography>
@@ -520,17 +452,20 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
         <Box sx={{ mb: 2 }}>
           <LinearProgress />
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            {loadingType === 'diagnosis' && 'Running comprehensive diagnosis...'}
-            {loadingType === 'complete-fix' && 'Applying complete metadata exchange fix...'}
-            {loadingType === 'seeding-fix' && 'Fixing seeding metadata sharing...'}
+            {loadingType === 'diagnosis' && 'Running metadata diagnosis...'}
+            {loadingType === 'protocol-debug' && 'Debugging extended protocol...'}
+            {loadingType === 'protocol-fix' && 'Applying protocol fix...'}
+            {loadingType === 'alternative-fix' && 'Applying alternative fix...'}
           </Typography>
         </Box>
       )}
       
-      {/* Enhanced Action Steps */}
+      {/* Action Buttons */}
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Typography variant="h6" gutterBottom>Enhanced Troubleshooting Actions</Typography>
+          <Typography variant="h6" gutterBottom>
+            🔧 Protocol Troubleshooting (New Approach)
+          </Typography>
           
           <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
             <Button
@@ -546,43 +481,63 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
             <Button
               variant="contained"
               size="small"
-              color="warning"
-              startIcon={loading && loadingType === 'complete-fix' ? <CircularProgress size={16} /> : <AutoFixHighIcon />}
-              onClick={handleCompleteMetadataFix}
+              color="info"
+              startIcon={loading && loadingType === 'protocol-debug' ? <CircularProgress size={16} /> : <SettingsEthernetIcon />}
+              onClick={handleProtocolDebug}
               disabled={loading}
             >
-              2. Focused Metadata Fix
+              2. Debug Protocol
+            </Button>
+            
+            <Button
+              variant="contained"
+              size="small"
+              color="warning"
+              startIcon={loading && loadingType === 'protocol-fix' ? <CircularProgress size={16} /> : <BuildIcon />}
+              onClick={handleProtocolFix}
+              disabled={loading}
+            >
+              3. Fix Protocol
             </Button>
             
             <Button
               variant="contained"
               size="small"
               color="success"
-              startIcon={loading && loadingType === 'seeding-fix' ? <CircularProgress size={16} /> : <SeedingIcon />}
-              onClick={handleSeedingFix}
+              startIcon={loading && loadingType === 'alternative-fix' ? <CircularProgress size={16} /> : <AutoFixHighIcon />}
+              onClick={handleAlternativeFix}
               disabled={loading}
             >
-              3. Simple Seeding Fix
+              4. Alternative Fix
             </Button>
           </Box>
           
-          <Alert severity="info" sx={{ mt: 2 }}>
+          <Alert severity="warning" sx={{ mt: 2 }}>
             <Typography variant="body2">
-              <strong>Recommended workflow:</strong>
+              <strong>NEW APPROACH:</strong> The "Unrecognized extension: handshake" error indicates a WebTorrent protocol issue.
               <br />
-              1. Run "Diagnose Issues" to identify the specific problem
+              1. First run "Diagnose Issues" and "Debug Protocol" to see the exact problem
               <br />
-              2. If downloading (Client 2): Use "Focused Metadata Fix" - cleaner, no DHT issues
+              2. Use "Fix Protocol" to address the extended handshake issue properly
               <br />
-              3. If seeding (Client 1): Use "Simple Seeding Fix" - ensures proper metadata sharing
+              3. If that fails, try "Alternative Fix" which uses WebTorrent's built-in protocol handling
             </Typography>
           </Alert>
+          
+          {hasExtensionError() && (
+            <Alert severity="error" sx={{ mt: 1 }}>
+              <Typography variant="body2">
+                <strong>⚠️ DETECTED:</strong> "Unrecognized extension" errors in the logs. This confirms the WebTorrent extended protocol issue.
+              </Typography>
+            </Alert>
+          )}
         </CardContent>
       </Card>
       
       {renderDiagnosis()}
-      {renderCompleteFixResult()}
-      {renderSeedingFixResult()}
+      {renderProtocolDebug()}
+      {renderFixResult(protocolFixResult, 'Protocol Fix Results', <BuildIcon color="primary" />)}
+      {renderFixResult(alternativeFixResult, 'Alternative Fix Results', <AutoFixHighIcon color="primary" />)}
     </Paper>
   );
 }
