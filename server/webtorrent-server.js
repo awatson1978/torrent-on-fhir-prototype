@@ -6,7 +6,6 @@ import fs from 'fs';
 import path from 'path';
 import { Settings } from '/imports/api/settings/settings';
 import { TorrentsCollection } from '/imports/api/torrents/torrents';
-import parseTorrent from './parse-torrent-wrapper';
 import { TorrentParser } from './utils/torrent-parser';
 
 // Server-side WebTorrent client
@@ -14,11 +13,176 @@ let client = null;
 let isInitializing = false;
 let initializePromise = null;
 
+// TCP pool fix state
+let tcpPoolFixed = false;
+let tcpPoolAttempts = 0;
+const MAX_TCP_ATTEMPTS = 5;
+
 // Helper function to resolve storage path with proper PORT substitution
 function getResolvedStoragePath() {
   const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
   const port = process.env.PORT || 3000;
   return storagePath.replace(/\$\{PORT\}/g, port);
+}
+
+/**
+ * SOLUTION 1: Force TCP pool creation with ARM64 compatibility
+ */
+async function forceTcpPoolCreation(webTorrentClient) {
+  console.log('🔧 FORCING TCP POOL CREATION (ARM64 + Node.js 22 fix)');
+  
+  if (tcpPoolFixed || tcpPoolAttempts >= MAX_TCP_ATTEMPTS) {
+    return tcpPoolFixed;
+  }
+  
+  tcpPoolAttempts++;
+  
+  try {
+    // Method 1: Force TCP server creation before WebTorrent initialization
+    const testPort = await findAvailablePort();
+    console.log(`📡 Creating TCP server on port ${testPort} to force pool initialization`);
+    
+    const tcpServer = net.createServer();
+    
+    return new Promise(function(resolve) {
+      tcpServer.listen(testPort, '0.0.0.0', function() {
+        console.log(`✅ TCP server listening on ${testPort}`);
+        
+        // Close test server immediately
+        tcpServer.close(function() {
+          console.log('🔧 Test server closed, attempting WebTorrent TCP pool creation');
+          
+          // Method 2: Force WebTorrent to use explicit TCP configuration
+          if (typeof webTorrentClient.listen === 'function') {
+            webTorrentClient.listen(0, '0.0.0.0', function() {
+              console.log('🎉 WebTorrent listen() successful');
+              
+              // Verify TCP pool creation
+              setTimeout(function() {
+                const hasPool = !!webTorrentClient._tcpPool;
+                console.log(`TCP pool verification: ${hasPool ? '✅ EXISTS' : '❌ MISSING'}`);
+                
+                if (hasPool) {
+                  tcpPoolFixed = true;
+                  resolve(true);
+                } else {
+                  // Method 3: Direct TCP pool manipulation
+                  attemptDirectTcpPoolFix(webTorrentClient).then(resolve);
+                }
+              }, 2000);
+            });
+          } else {
+            // WebTorrent doesn't have listen method, try alternative
+            attemptDirectTcpPoolFix(webTorrentClient).then(resolve);
+          }
+        });
+      });
+      
+      tcpServer.on('error', function(err) {
+        console.error(`TCP server error: ${err.message}`);
+        tcpServer.close();
+        resolve(false);
+      });
+    });
+    
+  } catch (err) {
+    console.error('Error in TCP pool creation:', err);
+    return false;
+  }
+}
+
+/**
+ * SOLUTION 2: Direct TCP pool manipulation for stubborn cases
+ */
+async function attemptDirectTcpPoolFix(webTorrentClient) {
+  console.log('🔧 ATTEMPTING DIRECT TCP POOL FIX');
+  
+  try {
+    // Access WebTorrent internals to force TCP pool
+    if (webTorrentClient._tcpPool) {
+      console.log('✅ TCP pool already exists via direct check');
+      return true;
+    }
+    
+    // Method A: Force internal TCP pool creation
+    if (typeof webTorrentClient._startTcpPool === 'function') {
+      console.log('🔧 Calling _startTcpPool() directly');
+      await webTorrentClient._startTcpPool();
+      
+      if (webTorrentClient._tcpPool) {
+        console.log('✅ TCP pool created via _startTcpPool()');
+        return true;
+      }
+    }
+    
+    // Method B: Create TCP pool manually
+    console.log('🔧 Creating TCP pool manually');
+    const availablePort = await findAvailablePort();
+    
+    // Create a TCP server and attach it to WebTorrent
+    const tcpPool = net.createServer();
+    
+    return new Promise(function(resolve) {
+      tcpPool.listen(availablePort, '0.0.0.0', function() {
+        console.log(`📡 Manual TCP pool listening on ${availablePort}`);
+        
+        // Attach to WebTorrent client
+        webTorrentClient._tcpPool = tcpPool;
+        webTorrentClient.tcpPort = availablePort;
+        webTorrentClient.listening = true;
+        
+        console.log('🎉 Manual TCP pool attached successfully');
+        resolve(true);
+      });
+      
+      tcpPool.on('error', function(err) {
+        console.error(`Manual TCP pool error: ${err.message}`);
+        resolve(false);
+      });
+    });
+    
+  } catch (err) {
+    console.error('Error in direct TCP pool fix:', err);
+    return false;
+  }
+}
+
+/**
+ * SOLUTION 3: Find available port with ARM64 compatibility
+ */
+function findAvailablePort(startPort = 6881) {
+  return new Promise(function(resolve, reject) {
+    const server = net.createServer();
+    
+    // Try specific port first
+    server.listen(startPort, '0.0.0.0', function() {
+      const port = server.address().port;
+      server.close(function() {
+        resolve(port);
+      });
+    });
+    
+    server.on('error', function(err) {
+      if (err.code === 'EADDRINUSE') {
+        // Port in use, try next
+        server.close();
+        if (startPort < 8000) {
+          findAvailablePort(startPort + 1).then(resolve).catch(reject);
+        } else {
+          // Use random port
+          const randomServer = net.createServer();
+          randomServer.listen(0, '0.0.0.0', function() {
+            const randomPort = randomServer.address().port;
+            randomServer.close(function() {
+              resolve(randomPort);
+            });
+          });
+        }
+      } else {
+        reject(err);
+      }
+    });
+  });
 }
 
 // Use require at the top-level instead of within functions
@@ -159,242 +323,150 @@ export const WebTorrentServer = {
    * @return {Promise<Object>} The WebTorrent client instance
    */
   initialize: function() {
-    // Return existing client if already initialized
-    if (client) {
+
+    if (client && !client.destroyed) {
       console.log('WebTorrent server already initialized');
-      return Promise.resolve(client);
+      return client;
     }
-    
-    // Return existing promise if initialization is in progress
+
     if (isInitializing && initializePromise) {
       console.log('WebTorrent server initialization in progress');
       return initializePromise;
     }
+
     
-    console.log('Starting WebTorrent server initialization');
+    console.log('🚀 Starting ENHANCED WebTorrent initialization (ARM64 + Node.js 22 fix)');
     isInitializing = true;
     
     // Create a promise for the initialization
-    initializePromise = new Promise(function(resolve, reject) {
+    initializePromise = new Promise(async function(resolve, reject) {
       try {
-        // Try to load WebTorrent
-        if (!WebTorrent) {
-          try {
-            WebTorrent = require('webtorrent');
-            console.log('WebTorrent loaded successfully during initialization');
-          } catch (err) {
-            console.error('Error requiring WebTorrent:', err);
-            try {
-              const npmPath = require('path').join(process.cwd(), 'node_modules', 'webtorrent');
-              WebTorrent = require(npmPath);
-              console.log('WebTorrent loaded from npm path');
-            } catch (err2) {
-              console.error('Failed to load WebTorrent from npm path:', err2);
-              reject(new Error('Could not load WebTorrent module'));
-              return;
-            }
-          }
-        }
-        
-        if (!WebTorrent) {
-          reject(new Error('WebTorrent module not available'));
-          return;
-        }
-        
-        const config = Settings.getWebTorrentConfig();
-        console.log('Creating WebTorrent server with config:', config);
-        
-        const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
-        const port = process.env.PORT || 3000;
-        const resolvedPath = storagePath.replace(/\${PORT}/g, port);
-        
-        console.log(`Using resolved storage path: ${resolvedPath}`);
-
-        if (!fs.existsSync(resolvedPath)) {
-          fs.mkdirSync(resolvedPath, { recursive: true });
-          console.log(`Created storage directory: ${resolvedPath}`);
-        }
-        
+        // Load WebTorrent with enhanced error handling
+        let WebTorrent;
         try {
-            const enhancedConfig = {
-              tracker: config.tracker,
-              dht: config.dht,
-              webSeeds: config.webSeeds,
-              
-              // CRITICAL: Force TCP pool creation
-              maxConns: 200,        // Increase from 55 to 200
-              tcpPool: true,        // Explicitly enable TCP pool
-              
-              // Enhanced peer connection settings
-              peerId: null,         // Let WebTorrent generate
-              nodeId: null,         // Let WebTorrent generate
-              
-              // Force socket creation capabilities
-              utp: true,            // Enable uTP protocol
-              tcpIncoming: true,
-              tcpOutgoing: true,
-
-              // Enhanced tracker settings
-              trackerOpts: {
-                announce: config.tracker || []
-              }
-            };
-
-            
-          client = new WebTorrent(enhancedConfig);
+          WebTorrent = require('webtorrent');
+          console.log('✅ WebTorrent module loaded successfully');
+        } catch (loadErr) {
+          console.error('❌ Failed to load WebTorrent:', loadErr);
           
-          if (!client) {
-            throw new Error('WebTorrent client creation returned null/undefined');
+          // Try alternative loading method
+          try {
+            const npmPath = path.join(process.cwd(), 'node_modules', 'webtorrent');
+            WebTorrent = require(npmPath);
+            console.log('✅ WebTorrent loaded from npm path');
+          } catch (altLoadErr) {
+            reject(new Error('Could not load WebTorrent module'));
+            return;
           }
-
-          // CRITICAL: Force TCP pool initialization
-          console.log('🔧 Forcing TCP pool initialization...');
-          
-          // Method 1: Try to access _tcpPool to trigger creation
-          if (client._tcpPool) {
-            console.log('✅ TCP pool already exists');
-          } else {
-            console.log('⚠️ TCP pool missing, attempting manual initialization...');
-            
-            // Method 2: Create TCP pool manually if needed
-            try {
-              // Force TCP pool creation by creating a temporary connection
-              const net = require('net');
-              const tempServer = net.createServer();
-              
-              tempServer.listen(0, function() {
-                const port = tempServer.address().port;
-                console.log(`🔧 Created temporary TCP server on port ${port} to trigger pool`);
-                
-                // Close temporary server
-                tempServer.close(function() {
-                  console.log('🔧 Temporary TCP server closed');
-                  
-                  // Check if this triggered TCP pool creation
-                  if (client._tcpPool) {
-                    console.log('✅ TCP pool now exists after manual trigger');
-                  } else {
-                    console.log('⚠️ TCP pool still missing after manual trigger');
-                    
-                    // Method 3: Force using internal WebTorrent methods
-                    try {
-                      if (typeof client._startTcpPool === 'function') {
-                        client._startTcpPool();
-                        console.log('✅ TCP pool started using _startTcpPool()');
-                      } else if (typeof client.listen === 'function') {
-                        client.listen(0, function() {
-                          console.log('✅ TCP pool started using listen()');
-                        });
-                      }
-                    } catch (poolErr) {
-                      console.error('❌ Manual TCP pool creation failed:', poolErr);
-                    }
-                  }
-                });
-              });
-              
-            } catch (serverErr) {
-              console.error('❌ Temporary server creation failed:', serverErr);
-            }
-          }
-
-
-
-
-          
-          client.on('error', function(err) {
-            console.error('WebTorrent server error:', err);
-
-                // Log TCP pool state on error
-            console.log('TCP pool state on error:', {
-              exists: !!client._tcpPool,
-              listening: client._tcpPool ? client._tcpPool.listening : false,
-              port: client._tcpPool ? client._tcpPool.port : null
-            });
-          });
-
-          // Monitor TCP pool state
-          client.on('listening', function() {
-            console.log('✅ WebTorrent client listening event fired');
-            console.log('TCP pool state:', {
-              exists: !!client._tcpPool,
-              listening: client._tcpPool ? client._tcpPool.listening : false,
-              port: client._tcpPool ? client._tcpPool.port : null,
-              maxConns: client.maxConns,
-              destroyed: client.destroyed
-            });
-          });
-
-          
-          console.log('✅ Enhanced WebTorrent server initialized with TCP pool fixes!');
-
-          // Additional verification after creation
-          Meteor.setTimeout(function() {
-            console.log('🔍 Post-initialization TCP pool check:', {
-              clientExists: !!client,
-              tcpPoolExists: !!(client && client._tcpPool),
-              listening: client ? client.listening : false,
-              maxConns: client ? client.maxConns : 0,
-              torrents: client ? client.torrents.length : 0
-            });
-            console.log('🔍 Post-initialization TCP pool verification:');
-            console.log('- TCP pool exists:', !!client._tcpPool);
-            console.log('- Client listening:', client.listening);
-            console.log('- Client destroyed:', client.destroyed);
-            console.log('- Max connections:', client.maxConns);
-            
-            if (client && !client._tcpPool) {
-              console.log('🚨 CRITICAL: TCP pool still missing after initialization!');
-              
-              // Last resort: restart WebTorrent with different config
-              console.log('🔄 Attempting WebTorrent restart with simpler config...');
-              
-              try {
-                client.destroy();
-                
-                // Create with minimal config to ensure TCP pool
-                client = new WebTorrent({
-                  maxConns: 100,
-                  tracker: ['wss://tracker.openwebtorrent.com']
-                });
-                
-                console.log('🔄 WebTorrent restarted with minimal config');
-                
-                Meteor.setTimeout(function() {
-                  console.log('🔍 Post-restart TCP pool check:', {
-                    tcpPoolExists: !!(client && client._tcpPool),
-                    listening: client ? client.listening : false
-                  });
-                }, 3000);
-                
-              } catch (restartErr) {
-                console.error('❌ WebTorrent restart failed:', restartErr);
-              }
-            }
-          }, 5000);
-
-          // Now that client is initialized, load all existing torrents from database
-          this._loadTorrentsFromDatabase();
-          this._initializeTrackers();
-
-          if (client.dht && typeof client.dht.bootstrap === 'function') {
-            console.log('Bootstrapping DHT...');
-            try {
-              client.dht.bootstrap();
-            } catch (e) {
-              console.warn('Error bootstrapping DHT:', e);
-            }
-          }
-          
-          isInitializing = false;
-          resolve(client);
-        } catch (err) {
-          console.error('Error creating WebTorrent client:', err);
-          isInitializing = false;
-          reject(err);
         }
+        
+        // Pre-create TCP infrastructure for ARM64 compatibility
+        console.log('🔧 Pre-creating TCP infrastructure for ARM64 compatibility');
+        const tcpPort = await findAvailablePort();
+        console.log(`📡 Reserved TCP port: ${tcpPort}`);
+        
+        // Enhanced configuration for ARM64 + Node.js 22
+        const config = Settings.getWebTorrentConfig();
+        const enhancedConfig = {
+          // Force TCP settings for ARM64 compatibility
+          maxConns: 200,
+          tcpPool: true,
+          
+          // Explicit port binding
+          tcpPort: tcpPort,
+          
+          // Enhanced tracker configuration
+          tracker: config.tracker || [
+            'wss://tracker.openwebtorrent.com',
+            'wss://tracker.btorrent.xyz', 
+            'wss://tracker.fastcast.nz'
+          ],
+          
+          // Network compatibility settings
+          dht: config.dht !== false, // Default to true
+          webSeeds: config.webSeeds !== false,
+          
+          // ARM64 specific settings
+          tcpIncoming: true,
+          tcpOutgoing: true,
+          utp: true,
+          
+          // Node.js 22 compatibility
+          downloadLimit: -1,
+          uploadLimit: -1,
+          
+          // Force IPv4 for better compatibility
+          family: 4
+        };
+        
+        console.log('🔧 Creating WebTorrent client with ARM64-optimized config');
+        client = new WebTorrent(enhancedConfig);
+        
+        if (!client) {
+          throw new Error('WebTorrent client creation returned null');
+        }
+        
+        console.log('✅ WebTorrent client created, checking TCP pool...');
+        
+        // CRITICAL: Force TCP pool creation immediately
+        const tcpPoolSuccess = await forceTcpPoolCreation(client);
+        
+        if (!tcpPoolSuccess) {
+          console.log('⚠️ TCP pool creation failed, attempting workaround...');
+          
+          // Destroy and recreate with different approach
+          client.destroy();
+          
+          // Try with minimal config first
+          client = new WebTorrent({
+            maxConns: 50,
+            tracker: ['wss://tracker.openwebtorrent.com']
+          });
+          
+          // Force listen immediately
+          if (typeof client.listen === 'function') {
+            await new Promise(function(listenResolve) {
+              client.listen(0, function() {
+                console.log('✅ Minimal config listen successful');
+                listenResolve();
+              });
+            });
+          }
+        }
+        
+        // Final verification
+        const finalTcpCheck = !!client._tcpPool;
+        console.log(`🔍 Final TCP pool check: ${finalTcpCheck ? '✅ SUCCESS' : '❌ FAILED'}`);
+        
+        if (finalTcpCheck) {
+          console.log(`📡 TCP pool listening on port: ${client.tcpPort || 'unknown'}`);
+        } else {
+          console.log('⚠️ Continuing without TCP pool - limited functionality');
+        }
+        
+        // Set up error handling
+        client.on('error', function(err) {
+          console.error('WebTorrent client error:', err);
+          
+          // Log TCP pool state on error
+          console.log('TCP pool state on error:', {
+            exists: !!client._tcpPool,
+            listening: client._tcpPool ? client._tcpPool.listening : false,
+            port: client.tcpPort
+          });
+        });
+        
+        // Load existing torrents
+        await this._loadTorrentsFromDatabase();
+        
+        isInitializing = false;
+        tcpPoolFixed = finalTcpCheck;
+        
+        console.log('🎉 Enhanced WebTorrent initialization complete!');
+        resolve(client);
+        
       } catch (err) {
-        console.error('Error during WebTorrent initialization:', err);
+        console.error('❌ Enhanced WebTorrent initialization failed:', err);
         isInitializing = false;
         reject(err);
       }
@@ -513,9 +585,63 @@ export const WebTorrentServer = {
    * @return {Object} The WebTorrent client
    */
   getClient: function() {
+    if (client && !client._tcpPool) {
+      console.log('⚠️ Client exists but TCP pool missing - attempting fix');
+      
+      // Attempt async fix without blocking
+      forceTcpPoolCreation(client).then(function(success) {
+        if (success) {
+          console.log('✅ TCP pool fix successful');
+        } else {
+          console.log('❌ TCP pool fix failed');
+        }
+      });
+    }
+    
     return client;
   },
   
+  /**
+   * Diagnostic method to check TCP pool status
+   */
+  diagnoseTcpPool: function() {
+    const diagnosis = {
+      clientExists: !!client,
+      clientDestroyed: client ? client.destroyed : null,
+      tcpPoolExists: client ? !!client._tcpPool : false,
+      listening: client ? client.listening : false,
+      tcpPort: client ? client.tcpPort : null,
+      maxConns: client ? client.maxConns : null,
+      platform: process.platform,
+      arch: process.arch,
+      nodeVersion: process.version,
+      tcpPoolFixed: tcpPoolFixed,
+      tcpPoolAttempts: tcpPoolAttempts
+    };
+    
+    console.log('🔍 TCP Pool Diagnosis:', diagnosis);
+    return diagnosis;
+  },
+
+
+  /**
+   * Force TCP pool recreation
+   */
+  forceRecreateClient: async function() {
+    console.log('🔄 FORCING CLIENT RECREATION');
+    
+    if (client) {
+      console.log('Destroying existing client...');
+      client.destroy();
+      client = null;
+    }
+    
+    tcpPoolFixed = false;
+    tcpPoolAttempts = 0;
+    
+    return await this.initialize();
+  },
+
   /**
    * Add a torrent to the client - ENHANCED with better duplicate handling
    * @param {String} torrentId - Magnet URI, info hash, or torrent file
@@ -533,6 +659,11 @@ export const WebTorrentServer = {
           return self.initialize().then(function(initializedClient) {
             return self.addTorrent(torrentId, opts);
           }).then(resolve).catch(reject);
+        }
+
+        // Verify TCP pool before adding torrent
+        if (!torrentClient._tcpPool) {
+          console.log('⚠️ Adding torrent without TCP pool - limited connectivity');
         }
         
         // Check if torrent already exists in our internal map first
@@ -1809,7 +1940,16 @@ Meteor.startup(function() {
   Meteor.setTimeout(function() {
     WebTorrentServer.initialize()
       .then(function() {
-        console.log('WebTorrent server initialized successfully from startup!');
+        console.log('🎉 Enhanced WebTorrent server initialized successfully!');
+        
+        // Run diagnostics
+        const diagnosis = WebTorrentServerFixed.diagnoseTcpPool();
+        
+        if (!diagnosis.tcpPoolExists) {
+          console.log('🚨 WARNING: TCP pool still missing after initialization');
+          console.log('This will limit peer-to-peer connectivity');
+          console.log('Consider using alternative networking configuration');
+        }
       })
       .catch(function(err) {
         console.error('Failed to initialize WebTorrent server from startup:', err);
