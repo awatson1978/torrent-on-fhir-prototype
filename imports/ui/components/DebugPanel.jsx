@@ -1,520 +1,590 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Meteor } from 'meteor/meteor';
-import { get } from 'lodash';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
+import Button from '@mui/material/Button';
 import Box from '@mui/material/Box';
+import Alert from '@mui/material/Alert';
+import CircularProgress from '@mui/material/CircularProgress';
+import Stepper from '@mui/material/Stepper';
+import Step from '@mui/material/Step';
+import StepLabel from '@mui/material/StepLabel';
+import StepContent from '@mui/material/StepContent';
 import Accordion from '@mui/material/Accordion';
 import AccordionSummary from '@mui/material/AccordionSummary';
 import AccordionDetails from '@mui/material/AccordionDetails';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import Button from '@mui/material/Button';
-import { Settings } from '../../api/settings/settings';
+import Table from '@mui/material/Table';
+import TableBody from '@mui/material/TableBody';
+import TableCell from '@mui/material/TableCell';
+import TableContainer from '@mui/material/TableContainer';
+import TableHead from '@mui/material/TableHead';
+import TableRow from '@mui/material/TableRow';
+import Chip from '@mui/material/Chip';
+import Card from '@mui/material/Card';
+import CardContent from '@mui/material/CardContent';
+import LinearProgress from '@mui/material/LinearProgress';
+import { alpha } from '@mui/material/styles';
 
-// Debug component to display application state and troubleshoot issues
-function DebugPanel() {
+// Icons
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import BugReportIcon from '@mui/icons-material/BugReport';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
+import BuildIcon from '@mui/icons-material/Build';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import NetworkCheckIcon from '@mui/icons-material/NetworkCheck';
+import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
+import WarningIcon from '@mui/icons-material/Warning';
+import SeedingIcon from '@mui/icons-material/CloudUpload';
+
+function MetadataDebugPanel({ torrentHash, torrentName }) {
+  const [diagnosis, setDiagnosis] = useState(null);
+  const [completeFixResult, setCompleteFixResult] = useState(null);
+  const [seedingFixResult, setSeedingFixResult] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [isOpen, setIsOpen] = useState(false);
-  const [runtimeInfo, setRuntimeInfo] = useState({
-    meteorStatus: 'Checking...',
-    webTorrentStatus: 'Disabled',
-    subscriptions: 'Checking...',
-    settings: 'Checking...',
-  });
-  const [expanded, setExpanded] = useState(false);
+  const [loadingType, setLoadingType] = useState('');
+  const [activeStep, setActiveStep] = useState(0);
   
-  useEffect(function() {
-    // Only run debugging if panel is open
-    if (!isOpen) return;
-    
-    // Check Meteor status
-    try {
-      setRuntimeInfo(prev => ({
-        ...prev,
-        meteorStatus: Meteor.status().connected ? 'Connected' : 'Disconnected'
-      }));
-    } catch (error) {
-      setRuntimeInfo(prev => ({
-        ...prev,
-        meteorStatus: `Error: ${error.message}`
-      }));
-    }
-    
-    // Check WebTorrent status (it's disabled, so just show that)
-    setRuntimeInfo(prev => ({
-      ...prev,
-      webTorrentStatus: 'Disabled in this version'
-    }));
-    
-    // Check subscription status
-    try {
-      const torrentsReady = Meteor.subscribe('torrents.all').ready();
-      setRuntimeInfo(prev => ({
-        ...prev,
-        subscriptions: torrentsReady ? 'Ready' : 'Loading'
-      }));
-    } catch (error) {
-      setRuntimeInfo(prev => ({
-        ...prev,
-        subscriptions: `Error: ${error.message}`
-      }));
-    }
-    
-    // Check settings
-    try {
-      const webTorrentConfig = Settings.getWebTorrentConfig();
-      const fhirConfig = Settings.getFhirConfig();
-      const uiConfig = Settings.getUIConfig();
-      
-      setRuntimeInfo(prev => ({
-        ...prev,
-        settings: JSON.stringify({
-          webTorrent: webTorrentConfig,
-          fhir: fhirConfig,
-          ui: uiConfig
-        }, null, 2)
-      }));
-    } catch (error) {
-      setRuntimeInfo(prev => ({
-        ...prev,
-        settings: `Error: ${error.message}`
-      }));
-    }
-  }, [isOpen]);
-  
-  // Toggle debug panel
-  function togglePanel() {
-    setIsOpen(!isOpen);
-  }
-  
-  // Handle accordion expansion
-  function handleAccordionChange(panel) {
-    return function(event, isExpanded) {
-      setExpanded(isExpanded ? panel : false);
-    };
-  }
-  
-  // Test connection to server
-  function testConnection() {
-    Meteor.call('debug.testPeers', function(err, result) {
-      if (err) {
-        alert('Error: ' + err.message);
-      } else {
-        alert('Peer test result: ' + JSON.stringify(result));
-      }
-    });
-  }
-  
-  function repairTorrents() {
+  // Run diagnosis
+  function handleDiagnosis() {
     setLoading(true);
-    Meteor.call('debug.repairTorrents', function(err, result) {
+    setLoadingType('diagnosis');
+    setDiagnosis(null);
+    
+    Meteor.call('torrents.diagnoseMetadataIssues', torrentHash, function(err, result) {
       setLoading(false);
+      setLoadingType('');
+      
       if (err) {
-        console.error('Repair error:', err);
-        alert('Error repairing torrents: ' + err.message);
+        console.error('Diagnosis error:', err);
+        setDiagnosis({ error: err.message });
       } else {
-        console.log('Repair result:', result);
-        alert(`Repair completed:\n- Added ${result.added.length} torrents to client\n- Saved ${result.saved.length} torrents to database`);
+        setDiagnosis(result);
+        console.log('Diagnosis result:', result);
       }
     });
   }
   
-  function testTrackerConnectivity(){
-    Meteor.call('debug.checkTorrentConnection', selectedTorrentHash, function(err, result) {
-      if (err) {
-        console.error('Error checking tracker connectivity:', err);
-        alert('Error checking tracker connectivity: ' + err.message);
-      } else {
-        console.log('Tracker connectivity:', result);
-        alert('Tracker connectivity: ' + result);
-      }
-    });
-  }
-  
-  function testTorrentFiles(){
-    // First get a list of torrents
-    Meteor.call('debug.getTorrentInfo', function(err, result) {
-      if (err) {
-        console.error('Error getting torrent info:', err);
-        alert('Error checking torrents: ' + err.message);
-        return;
-      }
-      
-      const clientTorrents = result.clientTorrents || [];
-      if (clientTorrents.length === 0) {
-        alert('No torrents found in client. Add a torrent first.');
-        return;
-      }
-      
-      // Use the first torrent's infoHash from the result
-      const firstTorrentHash = clientTorrents[0].infoHash;
-      console.log('Testing torrent files for:', firstTorrentHash);
-      
-      // Now get full status for this torrent
-      Meteor.call('debug.fullTorrentStatus', firstTorrentHash, function(statusErr, statusResult) {
-        if (statusErr) {
-          console.error('Error getting torrent status:', statusErr);
-          alert('Error testing torrent: ' + statusErr.message);
-        } else {
-          console.log('Full torrent status:', statusResult);
-          
-          // Show detailed results
-          let message = `Torrent Status for ${statusResult.database.name || firstTorrentHash}\n\n`;
-          message += `Database Record: ${statusResult.database.exists ? 'Found' : 'Missing'}\n`;
-          message += `Client Instance: ${statusResult.client.exists ? 'Found' : 'Missing'}\n`;
-          message += `Progress: ${statusResult.client.progress ? (statusResult.client.progress * 100).toFixed(2) + '%' : 'Unknown'}\n`;
-          message += `Peers: ${statusResult.client.numPeers || 0}\n`;
-          message += `Storage Path: ${statusResult.storage.path}\n`;
-          message += `Storage Exists: ${statusResult.storage.exists ? 'Yes' : 'No'}\n`;
-          message += `Storage Writable: ${statusResult.storage.writable ? 'Yes' : 'No'}\n`;
-          message += `Files Found On Disk: ${statusResult.files.exist ? 'Yes' : 'No'}\n\n`;
-          
-          if (statusResult.files.info.length > 0) {
-            message += 'Files:\n';
-            statusResult.files.info.forEach(file => {
-              message += `- ${file.name}: ${file.exists ? 'Exists' : 'Missing'} (${file.size} bytes)\n`;
-            });
-          } else {
-            message += 'No files found in torrent';
-          }
-          
-          alert(message);
-          
-          // If no files were found, try to actively load the torrent and check again
-          if (!statusResult.files.exist) {
-            if (confirm('No files found for this torrent. Would you like to try force-loading it?')) {
-              Meteor.call('debug.repairTorrents', function(repairErr, repairResult) {
-                if (repairErr) {
-                  alert('Error repairing: ' + repairErr.message);
-                } else {
-                  alert('Repair attempted. Check console for details.');
-                  console.log('Repair result:', repairResult);
-                }
-              });
-            }
-          }
-        }
-      });
-    });
-  }
-  
-  function testFileRetrieval() {
-    // First get a list of torrents
-    Meteor.call('debug.getTorrentInfo', function(err, result) {
-      if (err) {
-        console.error('Error getting torrent info:', err);
-        alert('Error checking torrents: ' + err.message);
-        return;
-      }
-      
-      const clientTorrents = result.clientTorrents || [];
-      if (clientTorrents.length === 0) {
-        alert('No torrents found in client. Add a torrent first.');
-        return;
-      }
-      
-      // Use the first torrent's infoHash from the result
-      const firstTorrentHash = clientTorrents[0].infoHash;
-      console.log('Testing file retrieval for torrent:', firstTorrentHash);
-      
-      // Test file retrieval
-      Meteor.call('debug.testFileRetrieval', firstTorrentHash, function(testErr, testResult) {
-        if (testErr) {
-          console.error('Error testing file retrieval:', testErr);
-          alert('Error testing file retrieval: ' + testErr.message);
-        } else {
-          console.log('File retrieval test result:', testResult);
-          alert(`File retrieval test successful!\n\n` +
-                `File: ${testResult.fileName}\n` +
-                `Content length: ${testResult.contentLength}\n` +
-                `Preview: ${testResult.contentPreview}`);
-        }
-      });
-    });
-  }
-  
-  function createSampleTorrent(){
-    Meteor.call('debug.createSampleTorrent', function(err, result) {
-      if (err) {
-        console.error('Error creating sample torrent:', err);
-        alert('Error creating sample torrent: ' + err.message);
-      } else {
-        console.log('Sample torrent created:', result);
-        alert('Sample torrent created!\nInfo hash: ' + result.infoHash);
-      }
-    });
-  }
-  
-  function checkTorrentsInDatabase(){
-    Meteor.call('debug.getTorrentInfo', function(err, result) {
-      if (err) {
-        console.error('Error checking torrents:', err);
-        alert('Error checking torrents: ' + err.message);
-      } else {
-        console.log('Database torrents:', result.dbTorrents);
-        console.log('Client torrents:', result.clientTorrents);
-        alert('Database torrents: ' + JSON.stringify(result.clientTorrents, null, 2) + '\n\nClient torrents:' + JSON.stringify(result.clientTorrents, null, 2));
-      }
-    });
-  }
-  
-  function checkServerStatus() {
+  // Complete metadata fix
+  function handleCompleteMetadataFix() {
     setLoading(true);
-    Meteor.call('debug.getServerStatus', function(err, result) {
+    setLoadingType('complete-fix');
+    setCompleteFixResult(null);
+    
+    Meteor.call('torrents.focusedMetadataFix', torrentHash, function(err, result) {
       setLoading(false);
+      setLoadingType('');
+      
       if (err) {
-        console.error('Debug error:', err);
-        alert('Error getting server status: ' + err.message);
+        console.error('Focused fix error:', err);
+        setCompleteFixResult({ error: err.message });
       } else {
-        console.log('Server Status:', result);
+        setCompleteFixResult(result);
+        console.log('Focused fix result:', result);
         
-        // Format the result for display
-        const clientTorrents = result.client.torrents || [];
-        const dbTorrents = result.database.torrents || [];
-        
-        const message = `WebTorrent Client:
-          - Initialized: ${result.client.initialized ? 'Yes' : 'No'}
-          - Active Torrents: ${clientTorrents.length}
-          ${clientTorrents.map(t => `  - ${t.name || 'Unnamed'} (${t.infoHash.substring(0, 8)}...)`).join('\n')}
-          
-          Database:
-          - Torrents: ${dbTorrents.length}
-          ${dbTorrents.map(t => `  - ${t.name || 'Unnamed'} (${t.infoHash.substring(0, 8)}...)`).join('\n')}
-          
-          Subscriptions:
-          - Status: ${result.subscription.ready ? 'Ready' : 'Loading'}
-          - Count: ${result.subscription.count}
-          
-          WebTorrent Trackers:
-          ${result.client.trackers.join('\n')}
-        `;
-        
-        // Display in a pre-formatted alert or modal
-        const debugWindow = window.open('', 'Debug Info', 'width=800,height=600');
-        debugWindow.document.write(`<pre>${message}</pre>`);
-      }
-    });
-  }
-  
-  function fixStoragePath() {
-    setLoading(true);
-    Meteor.call('debug.fixStoragePath', function(err, result) {
-      setLoading(false);
-      if (err) {
-        console.error('Error fixing storage path:', err);
-        alert('Error fixing storage path: ' + err.message);
-      } else {
-        console.log('Storage path result:', result);
-        alert(`Storage path fixed:\n- Path: ${result.storagePath}\n- Path exists: ${result.pathExists}\n- Files created: ${result.filesCreated.join(', ')}\n- Files in directory: ${result.filesInDirectory.join(', ')}`);
-      }
-    });
-  }
-  
-  function testAllStrategies() {
-    // First get a list of torrents
-    Meteor.call('debug.getTorrentInfo', function(err, result) {
-      if (err) {
-        console.error('Error getting torrent info:', err);
-        alert('Error checking torrents: ' + err.message);
-        return;
-      }
-      
-      const clientTorrents = result.clientTorrents || [];
-      if (clientTorrents.length === 0) {
-        alert('No torrents found in client. Add a torrent first.');
-        return;
-      }
-      
-      const firstTorrentHash = clientTorrents[0].infoHash;
-      console.log('Testing all file retrieval strategies for:', firstTorrentHash);
-      
-      setLoading(true);
-      Meteor.call('debug.testFileRetrievalStrategies', firstTorrentHash, function(testErr, testResult) {
-        setLoading(false);
-        if (testErr) {
-          console.error('Error testing strategies:', testErr);
-          alert('Error testing strategies: ' + testErr.message);
-        } else {
-          console.log('Strategy test results:', testResult);
-          
-          let message = `File Retrieval Strategy Test Results:\n\n`;
-          
-          Object.keys(testResult.strategies).forEach(strategy => {
-            const result = testResult.strategies[strategy];
-            message += `${strategy}: ${result.status}\n`;
-            if (result.status === 'success') {
-              message += `  - Content length: ${result.contentLength}\n`;
-              message += `  - Preview: ${result.preview}...\n`;
-            } else if (result.status === 'failed') {
-              message += `  - Reason: ${result.reason}\n`;
-            }
-            message += '\n';
-          });
-          
-          alert(message);
+        // Auto-refresh diagnosis after successful fix
+        if (result.success) {
+          setTimeout(handleDiagnosis, 3000);
         }
-      });
+      }
     });
+  }
+  
+  // Fix seeding metadata
+  function handleSeedingFix() {
+    setLoading(true);
+    setLoadingType('seeding-fix');
+    setSeedingFixResult(null);
+    
+    Meteor.call('torrents.simpleSeedingFix', torrentHash, function(err, result) {
+      setLoading(false);
+      setLoadingType('');
+      
+      if (err) {
+        console.error('Simple seeding fix error:', err);
+        setSeedingFixResult({ error: err.message });
+      } else {
+        setSeedingFixResult(result);
+        console.log('Simple seeding fix result:', result);
+        
+        // Auto-refresh diagnosis
+        setTimeout(handleDiagnosis, 2000);
+      }
+    });
+  }
+  
+  // Get severity for diagnosis issues
+  function getDiagnosticSeverity() {
+    if (!diagnosis) return 'info';
+    if (diagnosis.error) return 'error';
+    if (diagnosis.issues && diagnosis.issues.length > 0) {
+      const criticalIssues = diagnosis.issues.filter(issue => 
+        issue.includes('not found') || 
+        issue.includes('No peers') ||
+        issue.includes('protocol issue') ||
+        issue.includes('does not support ut_metadata')
+      );
+      return criticalIssues.length > 0 ? 'error' : 'warning';
+    }
+    return 'success';
+  }
+  
+  // Determine if this is likely a seeding torrent
+  function isLikelySeeding() {
+    return diagnosis?.basic?.files > 0 && diagnosis?.basic?.ready;
+  }
+  
+  // Render diagnosis results
+  function renderDiagnosis() {
+    if (!diagnosis) return null;
+    
+    const severity = getDiagnosticSeverity();
+    const likelySeeding = isLikelySeeding();
+    
+    return (
+      <Card sx={{ mt: 2 }}>
+        <CardContent>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+            <NetworkCheckIcon color="primary" />
+            <Typography variant="h6">Metadata Exchange Diagnosis</Typography>
+            <Chip 
+              label={severity === 'success' ? 'Healthy' : severity === 'warning' ? 'Issues Found' : 'Critical Issues'} 
+              color={severity}
+              size="small"
+            />
+            {likelySeeding && (
+              <Chip 
+                icon={<SeedingIcon />}
+                label="Seeding Mode" 
+                color="info"
+                size="small"
+                variant="outlined"
+              />
+            )}
+          </Box>
+          
+          {diagnosis.error && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {diagnosis.error}
+            </Alert>
+          )}
+          
+          {/* Basic Status */}
+          {diagnosis.basic && (
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>Current Status:</Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                <Chip 
+                  label={`Ready: ${diagnosis.basic.ready ? 'Yes' : 'No'}`} 
+                  color={diagnosis.basic.ready ? 'success' : 'error'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Files: ${diagnosis.basic.files}`} 
+                  color={diagnosis.basic.files > 0 ? 'success' : 'warning'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Peers: ${diagnosis.basic.peers}`} 
+                  color={diagnosis.basic.peers > 0 ? 'success' : 'error'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Connections: ${diagnosis.basic.wires}`} 
+                  color={diagnosis.basic.wires > 0 ? 'success' : 'warning'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Progress: ${Math.round(diagnosis.basic.progress * 100)}%`} 
+                  color={diagnosis.basic.progress > 0 ? 'info' : 'default'}
+                  size="small"
+                />
+              </Box>
+            </Box>
+          )}
+          
+          {/* Issues with specific guidance */}
+          {diagnosis.issues && diagnosis.issues.length > 0 && (
+            <Accordion>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <ErrorIcon color="error" />
+                  <Typography>Issues Found ({diagnosis.issues.length})</Typography>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                {diagnosis.issues.map((issue, index) => {
+                  let guidance = '';
+                  let severity = 'warning';
+                  
+                  if (issue.includes('does not support ut_metadata')) {
+                    guidance = '→ This indicates the seeding peer is not properly advertising metadata support. Use "Fix Seeding Metadata" on the seeding client.';
+                    severity = 'error';
+                  } else if (issue.includes('not interested')) {
+                    guidance = '→ The peer connection handshake needs to be enhanced. Try "Complete Metadata Fix".';
+                    severity = 'warning';
+                  } else if (issue.includes('No connected peers support metadata')) {
+                    guidance = '→ All connected peers lack metadata support. This is a critical protocol issue requiring complete fix.';
+                    severity = 'error';
+                  }
+                  
+                  return (
+                    <Alert key={index} severity={severity} sx={{ mb: 1 }}>
+                      <Typography variant="body2">{issue}</Typography>
+                      {guidance && (
+                        <Typography variant="caption" sx={{ mt: 1, display: 'block', fontStyle: 'italic' }}>
+                          {guidance}
+                        </Typography>
+                      )}
+                    </Alert>
+                  );
+                })}
+              </AccordionDetails>
+            </Accordion>
+          )}
+          
+          {/* Peer Analysis */}
+          {diagnosis.peerAnalysis && diagnosis.peerAnalysis.length > 0 && (
+            <Accordion>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <SwapHorizIcon color="primary" />
+                  <Typography>Peer Analysis ({diagnosis.peerAnalysis.length} peers)</Typography>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Address</TableCell>
+                        <TableCell>Metadata Support</TableCell>
+                        <TableCell>Interested</TableCell>
+                        <TableCell>Choking</TableCell>
+                        <TableCell>Extensions</TableCell>
+                        <TableCell>Action Needed</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {diagnosis.peerAnalysis.map((peer, index) => {
+                        // Determine the specific issue and action needed
+                        let actionNeeded = 'OK';
+                        let actionColor = 'success';
+                        
+                        if (!peer.supportsMetadata) {
+                          if (peer.extensions.includes('extended')) {
+                            actionNeeded = 'Force ut_metadata';
+                            actionColor = 'error';
+                          } else {
+                            actionNeeded = 'No extended protocol';
+                            actionColor = 'error';
+                          }
+                        } else if (!peer.interested) {
+                          actionNeeded = 'Force handshake';
+                          actionColor = 'warning';
+                        }
+                        
+                        return (
+                          <TableRow key={index}>
+                            <TableCell sx={{ fontFamily: 'monospace' }}>
+                              {peer.address}:{peer.port}
+                            </TableCell>
+                            <TableCell>
+                              <Chip 
+                                label={peer.supportsMetadata ? 'Yes' : 'No'} 
+                                color={peer.supportsMetadata ? 'success' : 'error'}
+                                size="small"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Chip 
+                                label={peer.interested ? 'Yes' : 'No'} 
+                                color={peer.interested ? 'success' : 'warning'}
+                                size="small"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Chip 
+                                label={peer.choking ? 'Yes' : 'No'} 
+                                color={peer.choking ? 'warning' : 'success'}
+                                size="small"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="caption">
+                                {peer.extensions.join(', ') || 'None'}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Chip
+                                label={actionNeeded}
+                                color={actionColor}
+                                size="small"
+                                variant="outlined"
+                              />
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </AccordionDetails>
+            </Accordion>
+          )}
+          
+          {/* Smart Recommendations */}
+          {diagnosis.recommendations && diagnosis.recommendations.length > 0 && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>
+                Smart Recommendations:
+              </Typography>
+              {diagnosis.recommendations.map((rec, index) => (
+                <Alert key={index} severity="info" sx={{ mb: 1 }}>
+                  {rec}
+                </Alert>
+              ))}
+            </Box>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+  
+  // Render complete fix result
+  function renderCompleteFixResult() {
+    if (!completeFixResult) return null;
+    
+    return (
+      <Card sx={{ mt: 2 }}>
+        <CardContent>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+            <AutoFixHighIcon color="primary" />
+            <Typography variant="h6">Focused Metadata Fix</Typography>
+            <Chip 
+              label={completeFixResult.success ? 'Success' : 'Failed'} 
+              color={completeFixResult.success ? 'success' : 'error'}
+              size="small"
+            />
+          </Box>
+          
+          {completeFixResult.error && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {completeFixResult.error}
+            </Alert>
+          )}
+          
+          {completeFixResult.success && (
+            <Alert severity="success" sx={{ mb: 2 }}>
+              🎉 Focused metadata fix successful! The torrent should now have proper metadata exchange without DHT issues.
+            </Alert>
+          )}
+          
+          {completeFixResult.actions && (
+            <Accordion>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Typography>Fix Actions ({completeFixResult.actions.length})</Typography>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Box sx={{ maxHeight: 400, overflow: 'auto' }}>
+                  {completeFixResult.actions.map((action, index) => (
+                    <Typography 
+                      key={index} 
+                      variant="body2" 
+                      sx={{ 
+                        fontFamily: 'monospace', 
+                        mb: 0.5,
+                        fontSize: '0.8rem',
+                        color: action.includes('❌') ? 'error.main' : 
+                               action.includes('✅') ? 'success.main' :
+                               action.includes('⚠️') ? 'warning.main' : 'text.primary'
+                      }}
+                    >
+                      {action}
+                    </Typography>
+                  ))}
+                </Box>
+              </AccordionDetails>
+            </Accordion>
+          )}
+          
+          {completeFixResult.finalStatus && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>Final Status:</Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                <Chip 
+                  label={`Ready: ${completeFixResult.finalStatus.ready ? 'Yes' : 'No'}`} 
+                  color={completeFixResult.finalStatus.ready ? 'success' : 'error'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Files: ${completeFixResult.finalStatus.files}`} 
+                  color={completeFixResult.finalStatus.files > 0 ? 'success' : 'warning'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Peers: ${completeFixResult.finalStatus.peers}`} 
+                  size="small"
+                />
+              </Box>
+            </Box>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+  
+  // Render seeding fix result
+  function renderSeedingFixResult() {
+    if (!seedingFixResult) return null;
+    
+    return (
+      <Card sx={{ mt: 2 }}>
+        <CardContent>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+            <SeedingIcon color="primary" />
+            <Typography variant="h6">Simple Seeding Fix</Typography>
+            <Chip 
+              label={seedingFixResult.success ? 'Success' : 'Failed'} 
+              color={seedingFixResult.success ? 'success' : 'error'}
+              size="small"
+            />
+          </Box>
+          
+          {seedingFixResult.error && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {seedingFixResult.error}
+            </Alert>
+          )}
+          
+          {seedingFixResult.success && (
+            <Alert severity="success" sx={{ mb: 2 }}>
+              🌱 Simple seeding fix applied! This torrent should now properly share metadata without complex protocol issues.
+            </Alert>
+          )}
+          
+          {seedingFixResult.actions && (
+            <Accordion>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Typography>Seeding Fix Actions ({seedingFixResult.actions.length})</Typography>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Box sx={{ maxHeight: 300, overflow: 'auto' }}>
+                  {seedingFixResult.actions.map((action, index) => (
+                    <Typography 
+                      key={index} 
+                      variant="body2" 
+                      sx={{ 
+                        fontFamily: 'monospace', 
+                        mb: 0.5,
+                        fontSize: '0.8rem',
+                        color: action.includes('❌') ? 'error.main' : 
+                               action.includes('✅') ? 'success.main' :
+                               action.includes('⚠️') ? 'warning.main' : 'text.primary'
+                      }}
+                    >
+                      {action}
+                    </Typography>
+                  ))}
+                </Box>
+              </AccordionDetails>
+            </Accordion>
+          )}
+        </CardContent>
+      </Card>
+    );
   }
   
   return (
-    <>
-      <Button 
-        variant="outlined" 
-        color="secondary" 
-        onClick={togglePanel}
-        sx={{ position: 'fixed', bottom: 10, right: 10, zIndex: 1000 }}
-      >
-        {isOpen ? 'Hide Debug' : 'Show Debug'}
-      </Button>
+    <Paper sx={{ 
+      p: 2, 
+      mt: 2,
+      backgroundColor: (theme) => alpha(theme.palette.info.main, 0.05),
+      border: (theme) => `1px solid ${alpha(theme.palette.info.main, 0.2)}`
+    }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+        <BugReportIcon color="info" />
+        <Typography variant="h6">
+          Enhanced Metadata Debug Panel
+        </Typography>
+      </Box>
       
-      {isOpen && (
-        <Paper 
-          sx={{ 
-            position: 'fixed', 
-            bottom: 60, 
-            right: 10, 
-            width: 1300, 
-            maxHeight: '80vh',
-            overflow: 'auto',
-            zIndex: 1000,
-            p: 2
-          }}
-        >
-          <Typography variant="h6">Debug Panel</Typography>
-          
-          <Box sx={{ mt: 2 }}>            
-            <Button 
-              variant="contained" 
-              color="primary" 
-              onClick={checkServerStatus}
-              sx={{ mr: 1 }}
-            >
-              Server Stats
-            </Button>
-            <Button 
-              variant="contained" 
-              color="primary" 
-              onClick={repairTorrents}
-              disabled={loading}
-              sx={{ mr: 1 }}
-            >
-              Repair
-            </Button>
-            <Button 
-              variant="contained" 
-              color="primary" 
-              onClick={testTrackerConnectivity}
-              disabled={loading}
-              sx={{ mr: 1 }}
-            >
-              Trackers
-            </Button>
-            <Button 
-              variant="contained" 
-              color="primary" 
-              onClick={checkTorrentsInDatabase}
-              disabled={loading}
-              sx={{ mr: 1 }}
-            >
-              DB Torrents
-            </Button>
-            <Button 
-              variant="contained" 
-              color="primary" 
-              onClick={testTorrentFiles}
-              disabled={loading}
-              sx={{ mr: 1 }}
-            >
-              Test Torrents
-            </Button> 
-            <Button 
-              variant="contained" 
-              color="primary" 
-              onClick={createSampleTorrent}
-              disabled={loading}
-              sx={{ mr: 1 }}
-            >
-              Create Sample
-            </Button> 
-            <Button 
-              variant="contained" 
-              color="primary" 
-              onClick={testFileRetrieval}
-              disabled={loading}
-              sx={{ mr: 1 }}
-            >
-              Test Retrieval
-            </Button>  
-            <Button 
-              variant="contained" 
-              color="primary" 
-              onClick={fixStoragePath}
-              disabled={loading}
-              sx={{ mr: 1 }}
-            >
-              Fix Storage
-            </Button>
-            <Button 
-              variant="contained" 
-              color="primary" 
-              onClick={testAllStrategies}
-              disabled={loading}
-              sx={{ mr: 1 }}
-            >
-              Test All
-            </Button>
-          </Box>
-          
-          <Box sx={{ mt: 2 }}>
-            <Accordion 
-              expanded={expanded === 'status'} 
-              onChange={handleAccordionChange('status')}
-            >
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography>Application Status</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                <Typography variant="body2">
-                  <strong>Meteor Connection:</strong> {runtimeInfo.meteorStatus}<br />
-                  <strong>WebTorrent Status:</strong> {runtimeInfo.webTorrentStatus}<br />
-                  <strong>Subscriptions:</strong> {runtimeInfo.subscriptions}
-                </Typography>
-              </AccordionDetails>
-            </Accordion>
-            
-            <Accordion 
-              expanded={expanded === 'settings'} 
-              onChange={handleAccordionChange('settings')}
-            >
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography>Settings</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                <pre style={{ overflowX: 'auto' }}>
-                  {runtimeInfo.settings}
-                </pre>
-              </AccordionDetails>
-            </Accordion>
-            
-            <Accordion 
-              expanded={expanded === 'errors'} 
-              onChange={handleAccordionChange('errors')}
-            >
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography>Console Output</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                <Typography variant="body2">
-                  Check the browser console (F12) for detailed error messages.
-                </Typography>
-              </AccordionDetails>
-            </Accordion>
-          </Box>
-        </Paper>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Debugging metadata exchange for: <strong>{torrentName}</strong>
+        <br />
+        Hash: <span style={{ fontFamily: 'monospace' }}>{torrentHash}</span>
+      </Typography>
+      
+      {loading && (
+        <Box sx={{ mb: 2 }}>
+          <LinearProgress />
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            {loadingType === 'diagnosis' && 'Running comprehensive diagnosis...'}
+            {loadingType === 'complete-fix' && 'Applying complete metadata exchange fix...'}
+            {loadingType === 'seeding-fix' && 'Fixing seeding metadata sharing...'}
+          </Typography>
+        </Box>
       )}
-    </>
+      
+      {/* Enhanced Action Steps */}
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>Enhanced Troubleshooting Actions</Typography>
+          
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={loading && loadingType === 'diagnosis' ? <CircularProgress size={16} /> : <NetworkCheckIcon />}
+              onClick={handleDiagnosis}
+              disabled={loading}
+            >
+              1. Diagnose Issues
+            </Button>
+            
+            <Button
+              variant="contained"
+              size="small"
+              color="warning"
+              startIcon={loading && loadingType === 'complete-fix' ? <CircularProgress size={16} /> : <AutoFixHighIcon />}
+              onClick={handleCompleteMetadataFix}
+              disabled={loading}
+            >
+              2. Focused Metadata Fix
+            </Button>
+            
+            <Button
+              variant="contained"
+              size="small"
+              color="success"
+              startIcon={loading && loadingType === 'seeding-fix' ? <CircularProgress size={16} /> : <SeedingIcon />}
+              onClick={handleSeedingFix}
+              disabled={loading}
+            >
+              3. Simple Seeding Fix
+            </Button>
+          </Box>
+          
+          <Alert severity="info" sx={{ mt: 2 }}>
+            <Typography variant="body2">
+              <strong>Recommended workflow:</strong>
+              <br />
+              1. Run "Diagnose Issues" to identify the specific problem
+              <br />
+              2. If downloading (Client 2): Use "Focused Metadata Fix" - cleaner, no DHT issues
+              <br />
+              3. If seeding (Client 1): Use "Simple Seeding Fix" - ensures proper metadata sharing
+            </Typography>
+          </Alert>
+        </CardContent>
+      </Card>
+      
+      {renderDiagnosis()}
+      {renderCompleteFixResult()}
+      {renderSeedingFixResult()}
+    </Paper>
   );
 }
 
-export default DebugPanel;
+export default MetadataDebugPanel;
