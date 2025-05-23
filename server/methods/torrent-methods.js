@@ -1288,6 +1288,158 @@ Meteor.methods({
       console.error(`Error announcing torrent ${infoHash}:`, err);
       throw new Meteor.Error('announce-failed', err.message);
     }
+  },
+
+  /**
+   * Emergency metadata fix that completely avoids DHT operations
+   * This should work without any bencode errors
+   */
+  'torrents.emergencyMetadataFix': async function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`🚨 EMERGENCY METADATA FIX for torrent ${infoHash}`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      actions: [],
+      success: false,
+      strategy: 'emergency-no-dht'
+    };
+    
+    try {
+      let torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+        if (!torrentRecord?.magnetURI) {
+          throw new Error('Torrent not found');
+        }
+        
+        result.actions.push('🔄 Reloading torrent');
+        torrent = await WebTorrentServer.addTorrent(torrentRecord.magnetURI);
+      }
+      
+      result.actions.push(`📊 Initial: files=${torrent.files?.length || 0}, peers=${torrent.numPeers}, ready=${torrent.ready}`);
+      
+      // Only fix wire connections - NO DHT operations
+      if (torrent.wires && torrent.wires.length > 0) {
+        result.actions.push(`🔧 Fixing ${torrent.wires.length} wire connections (NO DHT)`);
+        
+        for (const wire of torrent.wires) {
+          try {
+            result.actions.push(`🔌 Wire: ${wire.remoteAddress}`);
+            
+            // Install ut_metadata if missing
+            if (!wire.ut_metadata && wire.extended) {
+              const ut_metadata = require('ut_metadata');
+              
+              if (torrent.metadata) {
+                wire.use(ut_metadata(torrent.metadata));
+                result.actions.push(`   ✅ Installed ut_metadata with metadata`);
+              } else {
+                wire.use(ut_metadata());
+                result.actions.push(`   ✅ Installed ut_metadata for downloading`);
+              }
+            }
+            
+            // Send handshake
+            if (wire.ut_metadata) {
+              const handshake = {
+                m: { ut_metadata: 1 },
+                v: 'Emergency-Fix'
+              };
+              
+              if (torrent.metadata) {
+                handshake.metadata_size = torrent.metadata.length;
+              }
+              
+              wire.extended('handshake', Buffer.from(JSON.stringify(handshake)));
+              result.actions.push(`   ✅ Sent handshake`);
+            }
+            
+            // Request metadata if downloading
+            if (!torrent.ready && wire.ut_metadata?.fetch) {
+              wire.ut_metadata.fetch();
+              result.actions.push(`   📥 Requested metadata`);
+            }
+            
+            // Ensure interested
+            if (!wire.amInterested) {
+              wire.interested();
+              result.actions.push(`   📢 Sent interested`);
+            }
+            
+          } catch (wireErr) {
+            result.actions.push(`   ❌ Wire error: ${wireErr.message}`);
+          }
+        }
+      }
+      
+      // ONLY announce to trackers - NO DHT
+      result.actions.push('📢 Announcing to trackers only (NO DHT)');
+      
+      try {
+        if (typeof torrent.announce === 'function') {
+          torrent.announce();
+          result.actions.push('✅ Tracker announce only');
+        }
+        
+        // Explicitly skip DHT announce to avoid bencode issues
+        result.actions.push('⚠️ Skipping DHT announce to avoid bencode errors');
+        
+      } catch (announceErr) {
+        result.actions.push(`⚠️ Announce error: ${announceErr.message}`);
+      }
+      
+      // Wait for success
+      result.actions.push('⏳ Waiting for metadata (30 seconds, no DHT operations)');
+      
+      const maxWaitTime = 30000;
+      const startTime = Date.now();
+      
+      return new Promise(function(resolve) {
+        const checker = Meteor.setInterval(function() {
+          const elapsed = Date.now() - startTime;
+          const status = {
+            ready: torrent.ready,
+            files: torrent.files?.length || 0,
+            peers: torrent.numPeers
+          };
+          
+          if (elapsed % 5000 < 1000) {
+            result.actions.push(`📊 ${elapsed}ms: ready=${status.ready}, files=${status.files}, peers=${status.peers}`);
+          }
+          
+          // Success
+          if (torrent.ready && torrent.files && torrent.files.length > 0) {
+            Meteor.clearInterval(checker);
+            result.success = true;
+            result.finalStatus = status;
+            result.actions.push(`🎉 SUCCESS after ${elapsed}ms - no DHT issues!`);
+            
+            WebTorrentServer._updateTorrentRecord(torrent);
+            resolve(result);
+            return;
+          }
+          
+          // Timeout
+          if (elapsed >= maxWaitTime) {
+            Meteor.clearInterval(checker);
+            result.success = false;
+            result.finalStatus = status;
+            result.actions.push(`⏰ Timeout after ${elapsed}ms`);
+            resolve(result);
+          }
+        }, 1000);
+      });
+      
+    } catch (error) {
+      console.error('Emergency metadata fix error:', error);
+      result.error = error.message;
+      result.actions.push(`❌ Error: ${error.message}`);
+      return result;
+    }
   }
 
 });
