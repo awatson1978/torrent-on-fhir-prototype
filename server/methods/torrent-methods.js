@@ -799,12 +799,33 @@ Meteor.methods({
       const result = await WebTorrentServer.createTorrent(torrentDir, {
         name: name,
         comment: metadata.description || '',
-        path: resolvedPath  // This is where WebTorrent will look for files during seeding
+        path: resolvedPath
       });
       
-      console.log(`Torrent created successfully with ${torrentFiles.length} files in permanent directory: ${torrentDir}`);
+      console.log(`✅ Torrent created successfully: ${result.name} (${result.infoHash})`);
       
-      // Update metadata directly
+      // 🔧 AUTOMATIC SEEDING METADATA FIX
+      console.log(`🔧 Applying automatic seeding metadata fix for ${result.infoHash}`);
+      
+      try {
+        // Wait a moment for the torrent to be fully initialized
+        await new Promise(resolve => Meteor.setTimeout(resolve, 2000));
+        
+        // Apply the seeding metadata fix
+        const fixResult = await Meteor.callAsync('torrents.fixSeedingMetadataCreation', result.infoHash);
+        
+        if (fixResult.success) {
+          console.log(`✅ Automatic seeding metadata fix applied successfully`);
+        } else {
+          console.warn(`⚠️ Automatic seeding metadata fix failed: ${fixResult.error}`);
+          // Don't fail the entire creation, just log the warning
+        }
+      } catch (fixError) {
+        console.error(`❌ Error applying automatic seeding metadata fix:`, fixError);
+        // Don't fail the entire creation, just log the error
+      }
+      
+      // Update metadata
       if (Object.keys(metadata).length > 0) {
         try {
           await new Promise(resolve => Meteor.setTimeout(resolve, 500));
@@ -820,15 +841,16 @@ Meteor.methods({
               }
             });
             
-            // Also store the permanent directory path for future reference
+            // Store the permanent directory path and seeding fix status
             updateObj.torrentDirectory = torrentDir;
+            updateObj.seedingFixed = true; // Mark that seeding fix was applied
             
             if (Object.keys(updateObj).length > 0) {
               await TorrentsCollection.updateAsync(
                 { infoHash: result.infoHash },
                 { $set: updateObj }
               );
-              console.log(`Updated torrent metadata and stored directory path: ${torrentDir}`);
+              console.log(`Updated torrent metadata and marked seeding as fixed`);
             }
           }
         } catch (err) {
@@ -840,7 +862,8 @@ Meteor.methods({
         infoHash: result.infoHash,
         name: result.name,
         magnetURI: result.magnetURI,
-        torrentDirectory: torrentDir
+        torrentDirectory: torrentDir,
+        seedingFixed: true
       };
     } catch (error) {
       console.error('Error creating torrent:', error);
