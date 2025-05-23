@@ -1,5 +1,4 @@
-// imports/ui/components/DataViewer.jsx - Updated with enhanced metadata debugging
-
+// imports/ui/components/DataViewer.jsx - Enhanced with V2 Metadata Fix
 import React, { useState, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
 import Paper from '@mui/material/Paper';
@@ -22,6 +21,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import BugReportIcon from '@mui/icons-material/BugReport';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
+import SpeedIcon from '@mui/icons-material/Speed';
 
 import MetadataDebugPanel from './MetadataDebugPanel';
 
@@ -53,6 +53,8 @@ function DataViewer({ selectedTorrent }) {
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [autoFixAttempted, setAutoFixAttempted] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [quickDiagnosis, setQuickDiagnosis] = useState(null);
+  const [fixInProgress, setFixInProgress] = useState(false);
   
   // Fetch file contents when torrent is selected
   useEffect(function() {
@@ -61,6 +63,7 @@ function DataViewer({ selectedTorrent }) {
       setError('');
       setAutoFixAttempted(false);
       setRetryCount(0);
+      setQuickDiagnosis(null);
       return;
     }
     
@@ -68,6 +71,7 @@ function DataViewer({ selectedTorrent }) {
     setError('');
     setAutoFixAttempted(false);
     setRetryCount(0);
+    setQuickDiagnosis(null);
     
     fetchFileContents();
   }, [selectedTorrent]);
@@ -96,7 +100,8 @@ function DataViewer({ selectedTorrent }) {
         
         if (isMetadataError && !autoFixAttempted) {
           setError(`⚠️ Metadata Issue Detected: ${err.message || err.reason || 'Unknown error'}`);
-          setShowDebugPanel(true);
+          // Run quick diagnosis
+          runQuickDiagnosis();
         } else {
           // Regular error or auto-fix already attempted
           const errorDetails = err.details ? `\nDetails: ${err.details}` : '';
@@ -114,8 +119,71 @@ function DataViewer({ selectedTorrent }) {
         } else {
           console.log(`Received empty result for torrent ${selectedTorrent.infoHash}`);
           setError('No files found or files are still downloading - this may be a metadata exchange issue');
+          runQuickDiagnosis();
+        }
+      }
+    });
+  }
+  
+  // Run quick diagnosis
+  function runQuickDiagnosis() {
+    if (!selectedTorrent) return;
+    
+    Meteor.call('torrents.quickMetadataDiagnosis', selectedTorrent.infoHash, function(err, result) {
+      if (!err && result) {
+        setQuickDiagnosis(result);
+        console.log('Quick diagnosis:', result);
+      }
+    });
+  }
+  
+  // Handle the new V2 auto-fix
+  function handleAutoFixV2() {
+    if (!selectedTorrent || fixInProgress) return;
+    
+    setFixInProgress(true);
+    setAutoFixAttempted(true);
+    
+    console.log('Applying V2 metadata exchange fix...');
+    
+    Meteor.call('torrents.forceMetadataExchangeV2', selectedTorrent.infoHash, function(err, result) {
+      setFixInProgress(false);
+      
+      if (err) {
+        console.error('V2 fix error:', err);
+        setError(`Auto-fix failed: ${err.message}`);
+      } else {
+        console.log('V2 fix result:', result);
+        
+        if (result.success) {
+          // Retry fetching files
+          setRetryCount(prev => prev + 1);
+          fetchFileContents();
+        } else {
+          setError('Auto-fix completed but metadata was not received. Check the debug panel for details.');
           setShowDebugPanel(true);
         }
+      }
+    });
+  }
+  
+  // Handle seeding fix
+  function handleSeedingFix() {
+    if (!selectedTorrent || fixInProgress) return;
+    
+    setFixInProgress(true);
+    
+    console.log('Applying seeding advertisement fix...');
+    
+    Meteor.call('torrents.fixSeedingAdvertisement', selectedTorrent.infoHash, function(err, result) {
+      setFixInProgress(false);
+      
+      if (err) {
+        console.error('Seeding fix error:', err);
+        setError(`Seeding fix failed: ${err.message}`);
+      } else {
+        console.log('Seeding fix result:', result);
+        runQuickDiagnosis();
       }
     });
   }
@@ -160,6 +228,9 @@ function DataViewer({ selectedTorrent }) {
     error.includes('still downloading')
   );
   
+  // Check if this is a seeding torrent based on progress
+  const isSeeding = selectedTorrent?.status?.progress >= 1 || selectedTorrent?.status?.state === 'seeding';
+  
   return (
     <Box sx={{ width: '100%' }}>
       
@@ -169,17 +240,19 @@ function DataViewer({ selectedTorrent }) {
           severity={hasMetadataError ? "warning" : "error"} 
           sx={{ m: 2 }}
           action={
-            hasMetadataError && !autoFixAttempted ? (
+            hasMetadataError ? (
               <Box sx={{ display: 'flex', gap: 1 }}>
-                <Button 
-                  color="inherit" 
-                  size="small" 
-                  startIcon={<AutoFixHighIcon />}
-                  onClick={handleAutoFix}
-                  disabled={loading}
-                >
-                  Auto-Fix
-                </Button>
+                {!autoFixAttempted && (
+                  <Button 
+                    color="inherit" 
+                    size="small" 
+                    startIcon={fixInProgress ? <CircularProgress size={16} /> : <AutoFixHighIcon />}
+                    onClick={handleAutoFixV2}
+                    disabled={fixInProgress}
+                  >
+                    Auto-Fix V2
+                  </Button>
+                )}
                 <IconButton
                   color="inherit"
                   size="small"
@@ -204,14 +277,98 @@ function DataViewer({ selectedTorrent }) {
           {hasMetadataError && !autoFixAttempted && (
             <Box sx={{ mt: 1 }}>
               <Typography variant="body2">
-                💡 This appears to be a metadata exchange issue. Try the Auto-Fix button or use the debug panel for detailed troubleshooting.
+                💡 This appears to be a metadata exchange issue. The new V2 Auto-Fix handles the "peer doesn't support ut_metadata" problem.
               </Typography>
             </Box>
           )}
         </Alert>
       )}
       
-
+      {/* Quick Diagnosis Display */}
+      {quickDiagnosis && hasMetadataError && (
+        <Card sx={{ m: 2, backgroundColor: theme => theme.palette.mode === 'dark' ? 'grey.900' : 'grey.50' }}>
+          <CardContent>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <SpeedIcon color="info" />
+              <Typography variant="h6">Quick Diagnosis</Typography>
+              {isSeeding && (
+                <Chip label="Seeding" color="success" size="small" />
+              )}
+            </Box>
+            
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                Torrent Status:
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                <Chip 
+                  label={`Ready: ${quickDiagnosis.torrent?.ready ? 'Yes' : 'No'}`} 
+                  color={quickDiagnosis.torrent?.ready ? 'success' : 'error'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Files: ${quickDiagnosis.torrent?.files || 0}`} 
+                  color={quickDiagnosis.torrent?.files > 0 ? 'success' : 'warning'}
+                  size="small"
+                />
+                <Chip 
+                  label={`Peers: ${quickDiagnosis.torrent?.peers || 0}`} 
+                  color={quickDiagnosis.torrent?.peers > 0 ? 'success' : 'error'}
+                  size="small"
+                />
+                {quickDiagnosis.torrent?.hasMetadata && (
+                  <Chip 
+                    label={`Metadata: ${quickDiagnosis.torrent.metadataSize} bytes`} 
+                    color="info"
+                    size="small"
+                  />
+                )}
+              </Box>
+            </Box>
+            
+            {quickDiagnosis.wires && quickDiagnosis.wires.length > 0 && (
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="body2" color="text.secondary" gutterBottom>
+                  Peer Connections ({quickDiagnosis.wires.length}):
+                </Typography>
+                {quickDiagnosis.wires.map((wire, index) => (
+                  <Box key={index} sx={{ ml: 2, mb: 1 }}>
+                    <Typography variant="caption">
+                      {wire.address} - 
+                      {wire.supportsUtMetadata ? ' ✅ Supports metadata' : ' ❌ No metadata support'}
+                      {wire.hasUtMetadata && ' (active)'}
+                    </Typography>
+                  </Box>
+                ))}
+              </Box>
+            )}
+            
+            {quickDiagnosis.recommendations && quickDiagnosis.recommendations.length > 0 && (
+              <Alert severity="info" sx={{ mt: 2 }}>
+                {quickDiagnosis.recommendations.map((rec, index) => (
+                  <Typography key={index} variant="body2">
+                    {rec}
+                  </Typography>
+                ))}
+              </Alert>
+            )}
+            
+            {isSeeding && quickDiagnosis.torrent?.hasMetadata && (
+              <Box sx={{ mt: 2 }}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={fixInProgress ? <CircularProgress size={16} /> : <AutoFixHighIcon />}
+                  onClick={handleSeedingFix}
+                  disabled={fixInProgress}
+                >
+                  Fix Seeding Advertisement
+                </Button>
+              </Box>
+            )}
+          </CardContent>
+        </Card>
+      )}
       
       {/* Loading State */}
       {loading && (
@@ -221,10 +378,10 @@ function DataViewer({ selectedTorrent }) {
               <CircularProgress size={24} />
               <Box>
                 <Typography variant="body1">
-                  {autoFixAttempted ? 'Applying metadata exchange fix...' : 'Loading file contents...'}
+                  {autoFixAttempted ? 'Applying enhanced metadata exchange fix...' : 'Loading file contents...'}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  {autoFixAttempted ? 'This may take up to 2 minutes for the first load' : 'Please wait while we retrieve the data'}
+                  {autoFixAttempted ? 'This may take up to 60 seconds' : 'Please wait while we retrieve the data'}
                   {retryCount > 0 && ` (Attempt ${retryCount + 1})`}
                 </Typography>
               </Box>
@@ -247,6 +404,7 @@ function DataViewer({ selectedTorrent }) {
               <li>The torrent is still downloading metadata from peers</li>
               <li>No peers are available to provide the file information</li>
               <li>There's a network connectivity issue</li>
+              <li>The peer doesn't properly advertise metadata support</li>
             </ul>
           </CardContent>
           <CardActions>
@@ -256,8 +414,12 @@ function DataViewer({ selectedTorrent }) {
             >
               Debug This Issue
             </Button>
-            <Button onClick={handleRetry}>
-              Retry
+            <Button 
+              startIcon={<AutoFixHighIcon />}
+              onClick={handleAutoFixV2}
+              variant="contained"
+            >
+              Try V2 Auto-Fix
             </Button>
           </CardActions>
         </Card>
