@@ -791,5 +791,320 @@ Meteor.methods({
       result.error = error.message;
       return result;
     }
+  },
+
+  /**
+   * Deep network connection debugging
+   */
+  'debug.analyzeNetworkConnections': function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`🌐 DEEP NETWORK CONNECTION ANALYSIS for ${infoHash}`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      networkState: {},
+      connectionAttempts: [],
+      socketAnalysis: [],
+      trackerStatus: {},
+      recommendations: []
+    };
+    
+    try {
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        result.error = 'Torrent not found';
+        return result;
+      }
+      
+      // Basic network state
+      result.networkState = {
+        torrentName: torrent.name,
+        ready: torrent.ready,
+        paused: torrent.paused,
+        destroyed: torrent.destroyed,
+        listening: !!torrent._listening,
+        announced: !!torrent._announced,
+        numPeers: torrent.numPeers || 0,
+        wireCount: torrent.wires ? torrent.wires.length : 0,
+        hasDiscovery: !!torrent.discovery,
+        magnetURI: !!torrent.magnetURI
+      };
+      
+      // Analyze wire connections in detail
+      if (torrent.wires && torrent.wires.length > 0) {
+        torrent.wires.forEach(function(wire, index) {
+          const socketAnalysis = {
+            wireIndex: index,
+            wireExists: !!wire,
+            wireType: typeof wire,
+            basic: {},
+            socket: {},
+            timing: {},
+            errors: []
+          };
+          
+          if (wire) {
+            // Basic wire state
+            socketAnalysis.basic = {
+              remoteAddress: wire.remoteAddress || 'undefined',
+              remotePort: wire.remotePort || 'undefined',
+              localAddress: wire.localAddress || 'undefined',
+              localPort: wire.localPort || 'undefined',
+              destroyed: wire.destroyed,
+              readable: wire.readable,
+              writable: wire.writable,
+              connected: wire._connected || false,
+              handshakeComplete: wire._handshakeComplete || false
+            };
+            
+            // Socket-level analysis
+            if (wire._socket) {
+              socketAnalysis.socket = {
+                exists: true,
+                readyState: wire._socket.readyState,
+                remoteAddress: wire._socket.remoteAddress || 'undefined',
+                remotePort: wire._socket.remotePort || 'undefined',
+                localAddress: wire._socket.localAddress || 'undefined', 
+                localPort: wire._socket.localPort || 'undefined',
+                destroyed: wire._socket.destroyed,
+                readable: wire._socket.readable,
+                writable: wire._socket.writable,
+                connecting: wire._socket.connecting,
+                pending: wire._socket.pending
+              };
+            } else {
+              socketAnalysis.socket = { exists: false };
+            }
+            
+            // Connection timing
+            socketAnalysis.timing = {
+              created: wire._created || null,
+              connectedAt: wire._connectedAt || null,
+              lastActivity: wire._lastActivity || null,
+              age: wire._created ? Date.now() - wire._created : null
+            };
+            
+            // Check for specific error conditions
+            if (!wire.remoteAddress && !wire._socket) {
+              socketAnalysis.errors.push('No socket object - connection never started');
+            } else if (!wire.remoteAddress && wire._socket) {
+              if (wire._socket.connecting) {
+                socketAnalysis.errors.push('Socket still connecting - TCP handshake in progress');
+              } else if (wire._socket.destroyed) {
+                socketAnalysis.errors.push('Socket destroyed - connection failed');
+              } else {
+                socketAnalysis.errors.push('Socket exists but remoteAddress not populated - unusual state');
+              }
+            }
+            
+            if (wire.destroyed) {
+              socketAnalysis.errors.push('Wire marked as destroyed');
+            }
+            
+            if (socketAnalysis.timing.age && socketAnalysis.timing.age > 30000) {
+              socketAnalysis.errors.push(`Wire very old (${Math.round(socketAnalysis.timing.age/1000)}s) - connection likely stuck`);
+            }
+          }
+          
+          result.socketAnalysis.push(socketAnalysis);
+        });
+      }
+      
+      // Tracker status analysis
+      if (torrent.discovery) {
+        result.trackerStatus = {
+          hasTracker: !!torrent.discovery.tracker,
+          hasDHT: !!torrent.discovery.dht,
+          trackerAnnounced: false,
+          dhtAnnounced: false,
+          trackerErrors: [],
+          dhtErrors: []
+        };
+        
+        // Check tracker status
+        if (torrent.discovery.tracker) {
+          result.trackerStatus.trackerAnnounced = torrent.discovery.tracker._announcing || false;
+          
+          // Look for tracker errors
+          if (torrent.discovery.tracker._errors) {
+            result.trackerStatus.trackerErrors = torrent.discovery.tracker._errors;
+          }
+        }
+        
+        // Check DHT status
+        if (torrent.discovery.dht) {
+          result.trackerStatus.dhtAnnounced = !!torrent.discovery.dht._announcing;
+          
+          if (torrent.discovery.dht._errors) {
+            result.trackerStatus.dhtErrors = torrent.discovery.dht._errors;
+          }
+        }
+      }
+      
+      // Generate specific recommendations
+      const socketsWithIssues = result.socketAnalysis.filter(s => s.errors.length > 0);
+      const connectingCount = result.socketAnalysis.filter(s => s.socket.connecting).length;
+      const destroyedCount = result.socketAnalysis.filter(s => s.basic.destroyed).length;
+      const noSocketCount = result.socketAnalysis.filter(s => !s.socket.exists).length;
+      
+      if (connectingCount > 0) {
+        result.recommendations.push(`${connectingCount} wire(s) still connecting - TCP handshake in progress`);
+        result.recommendations.push('Wait longer for TCP connections to complete');
+      }
+      
+      if (destroyedCount > 0) {
+        result.recommendations.push(`${destroyedCount} wire(s) destroyed - connections failed`);
+        result.recommendations.push('Check network connectivity and firewall settings');
+      }
+      
+      if (noSocketCount > 0) {
+        result.recommendations.push(`${noSocketCount} wire(s) have no socket - connections never started`);
+        result.recommendations.push('Check if WebTorrent client can create outbound connections');
+      }
+      
+      if (result.trackerStatus.trackerErrors && result.trackerStatus.trackerErrors.length > 0) {
+        result.recommendations.push('Tracker connection errors detected - check tracker URLs');
+      }
+      
+      if (result.trackerStatus.dhtErrors && result.trackerStatus.dhtErrors.length > 0) {
+        result.recommendations.push('DHT errors detected - check DHT configuration');
+      }
+      
+      if (socketsWithIssues.length === 0) {
+        result.recommendations.push('All socket connections appear healthy');
+      }
+      
+      console.log('Network connection analysis completed:', result);
+      return result;
+      
+    } catch (error) {
+      console.error('Error in network connection analysis:', error);
+      result.error = error.message;
+      return result;
+    }
+  },
+  
+  /**
+   * Monitor connection attempts in real-time
+   */
+  'debug.monitorConnectionAttempts': function(infoHash, durationMs = 60000) {
+    check(infoHash, String);
+    check(durationMs, Number);
+    
+    console.log(`📊 MONITORING CONNECTION ATTEMPTS for ${durationMs}ms`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      monitoring: true,
+      duration: durationMs,
+      events: []
+    };
+    
+    const torrent = WebTorrentServer.getTorrent(infoHash);
+    if (!torrent) {
+      result.error = 'Torrent not found';
+      return result;
+    }
+    
+    const startTime = Date.now();
+    let eventCount = 0;
+    
+    // Enhanced wire monitoring
+    const originalOnWire = torrent._onWire;
+    
+    torrent._onWire = function(wire) {
+      eventCount++;
+      const wireEvent = {
+        event: 'wire_created',
+        timestamp: new Date(),
+        elapsed: Date.now() - startTime,
+        wireIndex: eventCount,
+        initialState: {
+          hasSocket: !!wire._socket,
+          socketState: wire._socket ? wire._socket.readyState : 'no socket',
+          remoteAddress: wire.remoteAddress || 'undefined',
+          destroyed: wire.destroyed
+        }
+      };
+      
+      result.events.push(wireEvent);
+      console.log(`📊 Wire created #${eventCount}:`, wireEvent);
+      
+      // Monitor this specific wire
+      const wireMonitor = Meteor.setInterval(function() {
+        const currentState = {
+          remoteAddress: wire.remoteAddress || 'undefined',
+          destroyed: wire.destroyed,
+          socketExists: !!wire._socket,
+          socketState: wire._socket ? wire._socket.readyState : 'no socket',
+          handshakeComplete: wire._handshakeComplete || false
+        };
+        
+        // Check if state changed
+        const lastState = wireEvent.initialState;
+        const changed = JSON.stringify(currentState) !== JSON.stringify(lastState);
+        
+        if (changed) {
+          const stateEvent = {
+            event: 'wire_state_change',
+            timestamp: new Date(),
+            elapsed: Date.now() - startTime,
+            wireIndex: eventCount,
+            oldState: lastState,
+            newState: currentState
+          };
+          
+          result.events.push(stateEvent);
+          console.log(`📊 Wire #${eventCount} state changed:`, stateEvent);
+          
+          // Update for next comparison
+          Object.assign(wireEvent.initialState, currentState);
+        }
+        
+        // Clean up monitor if wire is destroyed or connection established
+        if (wire.destroyed || wire.remoteAddress) {
+          Meteor.clearInterval(wireMonitor);
+          
+          const finalEvent = {
+            event: wire.remoteAddress ? 'wire_connected' : 'wire_destroyed',
+            timestamp: new Date(),
+            elapsed: Date.now() - startTime,
+            wireIndex: eventCount,
+            finalState: currentState
+          };
+          
+          result.events.push(finalEvent);
+          console.log(`📊 Wire #${eventCount} final state:`, finalEvent);
+        }
+      }, 1000);
+      
+      // Clean up after max duration
+      Meteor.setTimeout(function() {
+        Meteor.clearInterval(wireMonitor);
+      }, durationMs);
+      
+      // Call original handler
+      if (originalOnWire) {
+        originalOnWire.call(this, wire);
+      }
+    };
+    
+    // Restore original handler after monitoring period
+    Meteor.setTimeout(function() {
+      torrent._onWire = originalOnWire;
+      result.monitoring = false;
+      result.totalEvents = result.events.length;
+      console.log(`📊 Connection monitoring completed. Total events: ${result.events.length}`);
+    }, durationMs);
+    
+    return {
+      ...result,
+      status: 'monitoring started',
+      message: `Monitoring connection attempts for ${durationMs}ms, check logs for real-time updates`
+    };
   }
 });
