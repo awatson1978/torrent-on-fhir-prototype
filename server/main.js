@@ -4,6 +4,15 @@ import { Meteor } from 'meteor/meteor';
 import { get } from 'lodash';
 import fs from 'fs';
 
+import './methods/torrent-methods';
+import './methods/peer-methods';
+import './methods/network-methods';
+import './methods/debug-methods';
+import './methods/methods';
+import './methods/metadata-methods';
+
+import './tracker-fix';
+
 Meteor.startup(async () => {
   console.log('Starting FHIR P2P server with enhanced environment configuration...');
   
