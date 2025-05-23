@@ -37,41 +37,6 @@ Meteor.methods({
     return allPeers;
   },
   
-  /**
-   * Get peers for a specific torrent
-   * @param {String} infoHash - Info hash of the torrent
-   * @return {Array} Array of peer objects
-   */
-  'peers.getForTorrent': function(infoHash) {
-    check(infoHash, String);
-    
-    // Get the torrent from the WebTorrent client
-    const torrent = WebTorrentServer.getTorrent(infoHash);
-    if (!torrent) {
-      throw new Meteor.Error('not-found', 'Torrent not found');
-    }
-    
-    const peers = [];
-    
-    // Collect peers from the torrent
-    if (torrent.wires && torrent.wires.length > 0) {
-      torrent.wires.forEach(function(wire) {
-        if (wire.peerId) {
-          peers.push({
-            id: wire.peerId,
-            addr: wire.remoteAddress,
-            port: wire.remotePort,
-            client: getClientName(wire.peerExtendedHandshake),
-            connectionType: wire.type || 'unknown',
-            downloadSpeed: wire.downloadSpeed(),
-            uploadSpeed: wire.uploadSpeed()
-          });
-        }
-      });
-    }
-    
-    return peers;
-  },
   
   /**
    * Get network statistics

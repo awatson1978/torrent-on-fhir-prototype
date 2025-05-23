@@ -2,12 +2,12 @@ function NetworkStatus() {
   const [status, setStatus] = useState({});
   
   useEffect(() => {
-    Meteor.call('debug.getNetworkStatus', (err, result) => {
+    Meteor.call('network.getBasicStatus', (err, result) => {
       if (!err) setStatus(result);
     });
     
     const timer = setInterval(() => {
-      Meteor.call('debug.getNetworkStatus', (err, result) => {
+      Meteor.call('network.getBasicStatus', (err, result) => {
         if (!err) setStatus(result);
       });
     }, 10000);

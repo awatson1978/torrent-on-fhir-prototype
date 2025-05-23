@@ -377,44 +377,6 @@ Meteor.methods({
     }
   },
 
-  /**
-   * Create a simple test torrent for debugging
-   * @return {Object} Created test torrent info
-   */
-  'debug.createTestTorrent': async function() {
-    console.log('🧪 Creating test torrent for debugging');
-    
-    try {
-      const testContent = JSON.stringify({
-        resourceType: "Bundle",
-        type: "collection",
-        id: "debug-test-" + Date.now(),
-        entry: [{
-          resource: {
-            resourceType: "Patient",
-            id: "test-patient",
-            name: [{ family: "Test", given: ["Debug"] }]
-          }
-        }]
-      }, null, 2);
-      
-      const fileData = [{
-        name: 'debug-test-bundle.json',
-        data: testContent
-      }];
-      
-      const result = await Meteor.callAsync('torrents.create', 'Debug Test Torrent', fileData, {
-        description: 'Test torrent for debugging metadata issues',
-        fhirType: 'bundle'
-      });
-      
-      console.log('🧪 Test torrent created:', result);
-      return result;
-      
-    } catch (error) {
-      console.error('Error creating test torrent:', error);
-      throw new Meteor.Error('test-failed', error.message);
-    }
-  }
+
 
 });

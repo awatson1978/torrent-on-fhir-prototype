@@ -1004,26 +1004,6 @@ Meteor.methods({
     }
   },
   
-  /**
-   * Get file contents from a torrent
-   * @param {String} infoHash - Info hash of the torrent
-   * @param {String} filename - Name of the file to get
-   * @return {String} File contents
-   */
-  'torrents.getFileContents': async function(infoHash, filename) {
-    check(infoHash, String);
-    check(filename, String);
-    
-    try {
-      const content = await WebTorrentServer.getFileContents(infoHash, filename);
-      return content;
-    } catch (error) {
-      throw new Meteor.Error(
-        error.error || 'error', 
-        error.reason || error.message || 'Failed to get file contents'
-      );
-    }
-  },
   
   /**
    * Pause a torrent
@@ -1134,34 +1114,7 @@ Meteor.methods({
     return true;
   },
   
-  /**
-   * Update torrent metadata
-   * @param {String} infoHash - The torrent info hash
-   * @param {Object} metadata - Metadata to update
-   */
-  'torrents.updateMeta': async function(infoHash, metadata) {
-    check(infoHash, String);
-    check(metadata, Object);
-    
-    const allowedFields = ['description', 'fhirType', 'meta', 'torrentDirectory'];
-    const updateObj = {};
-    
-    Object.keys(metadata).forEach(function(key) {
-      if (allowedFields.includes(key)) {
-        updateObj[key] = metadata[key];
-      }
-    });
-    
-    const torrent = await TorrentsCollection.findOneAsync({ infoHash });
-    if (!torrent) {
-      throw new Meteor.Error('not-found', 'Torrent not found');
-    }
-    
-    return await TorrentsCollection.updateAsync(
-      { infoHash }, 
-      { $set: updateObj }
-    );
-  },
+
   
   /**
    * Update FHIR metadata for a torrent
