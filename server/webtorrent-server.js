@@ -231,7 +231,9 @@ export const WebTorrentServer = {
               
               // Force socket creation capabilities
               utp: true,            // Enable uTP protocol
-              
+              tcpIncoming: true,
+              tcpOutgoing: true,
+
               // Enhanced tracker settings
               trackerOpts: {
                 announce: config.tracker || []
@@ -318,7 +320,8 @@ export const WebTorrentServer = {
               exists: !!client._tcpPool,
               listening: client._tcpPool ? client._tcpPool.listening : false,
               port: client._tcpPool ? client._tcpPool.port : null,
-              maxConns: client.maxConns
+              maxConns: client.maxConns,
+              destroyed: client.destroyed
             });
           });
 
@@ -334,6 +337,11 @@ export const WebTorrentServer = {
               maxConns: client ? client.maxConns : 0,
               torrents: client ? client.torrents.length : 0
             });
+            console.log('🔍 Post-initialization TCP pool verification:');
+            console.log('- TCP pool exists:', !!client._tcpPool);
+            console.log('- Client listening:', client.listening);
+            console.log('- Client destroyed:', client.destroyed);
+            console.log('- Max connections:', client.maxConns);
             
             if (client && !client._tcpPool) {
               console.log('🚨 CRITICAL: TCP pool still missing after initialization!');
