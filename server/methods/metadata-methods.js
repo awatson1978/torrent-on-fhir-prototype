@@ -444,6 +444,407 @@ Meteor.methods({
       diagnosis.error = error.message;
       return diagnosis;
     }
+  },
+
+  /**
+   * Force complete metadata exchange resolution
+   * This addresses the specific issue where seeding peers don't properly 
+   * advertise or share ut_metadata extension
+   */
+  'torrents.forceCompleteMetadataFix': async function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`🔧 COMPLETE METADATA FIX for torrent ${infoHash}`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      actions: [],
+      success: false,
+      strategy: 'complete-fix'
+    };
+    
+    try {
+      let torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        const torrentRecord = await TorrentsCollection.findOneAsync({ infoHash });
+        if (!torrentRecord?.magnetURI) {
+          throw new Error('Torrent not found');
+        }
+        
+        result.actions.push('🔄 Reloading torrent for complete metadata fix');
+        torrent = await WebTorrentServer.addTorrent(torrentRecord.magnetURI);
+      }
+      
+      result.actions.push(`📊 Initial: files=${torrent.files?.length || 0}, peers=${torrent.numPeers}, ready=${torrent.ready}`);
+      
+      // Step 1: Force ut_metadata extension on all wires
+      if (torrent.wires && torrent.wires.length > 0) {
+        result.actions.push(`🔧 Forcing ut_metadata extension on ${torrent.wires.length} wire connections`);
+        
+        for (const wire of torrent.wires) {
+          try {
+            // Force load ut_metadata extension if not present
+            if (!wire.ut_metadata) {
+              result.actions.push(`📡 Loading ut_metadata extension for ${wire.remoteAddress}`);
+              
+              // Dynamically require and install ut_metadata
+              const ut_metadata = require('ut_metadata');
+              
+              // Install the extension on this wire
+              if (torrent.metadata) {
+                // If we have metadata (seeding), provide it
+                wire.use(ut_metadata(torrent.metadata));
+                result.actions.push(`✅ Installed ut_metadata with metadata for ${wire.remoteAddress}`);
+              } else {
+                // If we don't have metadata (downloading), install without
+                wire.use(ut_metadata());
+                result.actions.push(`✅ Installed ut_metadata for downloading from ${wire.remoteAddress}`);
+              }
+            }
+            
+            // Force extended protocol handshake
+            if (!wire.peerExtended && wire.extended) {
+              result.actions.push(`🤝 Forcing extended handshake with ${wire.remoteAddress}`);
+              
+              // Send extended handshake with ut_metadata support
+              const extendedHandshake = {
+                m: {
+                  ut_metadata: 1
+                },
+                v: 'WebTorrent Enhanced',
+                reqq: 250,
+                metadata_size: torrent.metadata ? torrent.metadata.length : undefined
+              };
+              
+              try {
+                wire.extended('handshake', Buffer.from(JSON.stringify(extendedHandshake)));
+                result.actions.push(`✅ Sent enhanced handshake to ${wire.remoteAddress}`);
+              } catch (handshakeErr) {
+                result.actions.push(`⚠️ Handshake error with ${wire.remoteAddress}: ${handshakeErr.message}`);
+              }
+            }
+            
+            // For downloading torrents, aggressively request metadata
+            if (!torrent.ready && wire.ut_metadata) {
+              result.actions.push(`📥 Aggressively requesting metadata from ${wire.remoteAddress}`);
+              
+              try {
+                // Send multiple metadata requests
+                for (let piece = 0; piece < 10; piece++) {
+                  if (wire.ut_metadata.fetch) {
+                    wire.ut_metadata.fetch();
+                  }
+                  
+                  // Also try manual metadata request
+                  const metadataRequest = {
+                    msg_type: 0, // request
+                    piece: piece
+                  };
+                  
+                  if (wire.ut_metadata && wire.ut_metadata.id) {
+                    wire.extended('ut_metadata', Buffer.from(JSON.stringify(metadataRequest)));
+                  }
+                }
+                result.actions.push(`✅ Sent multiple metadata requests to ${wire.remoteAddress}`);
+              } catch (requestErr) {
+                result.actions.push(`⚠️ Metadata request error with ${wire.remoteAddress}: ${requestErr.message}`);
+              }
+            }
+            
+            // Make sure we're interested and not choking
+            if (!wire.amInterested) {
+              wire.interested();
+              result.actions.push(`📢 Sent interested to ${wire.remoteAddress}`);
+            }
+            
+            if (wire.amChoking) {
+              wire.unchoke();
+              result.actions.push(`🔓 Unchoked ${wire.remoteAddress}`);
+            }
+            
+          } catch (wireErr) {
+            result.actions.push(`❌ Error fixing wire ${wire.remoteAddress}: ${wireErr.message}`);
+          }
+        }
+      }
+      
+      // Step 2: Override wire creation to ensure metadata support
+      result.actions.push('🔧 Setting up enhanced wire handling for new connections');
+      
+      const originalOnWire = torrent._onWire;
+      torrent._onWire = function(wire) {
+        result.actions.push(`🔌 New wire connection: ${wire.remoteAddress}, applying metadata fix`);
+        
+        // Call original handler
+        if (originalOnWire) {
+          originalOnWire.call(this, wire);
+        }
+        
+        // Immediately install ut_metadata extension
+        setTimeout(function() {
+          try {
+            const ut_metadata = require('ut_metadata');
+            
+            if (!wire.ut_metadata) {
+              if (torrent.metadata) {
+                wire.use(ut_metadata(torrent.metadata));
+              } else {
+                wire.use(ut_metadata());
+              }
+              result.actions.push(`✅ Auto-installed ut_metadata on new wire ${wire.remoteAddress}`);
+            }
+            
+            // Force extended handshake
+            const extendedHandshake = {
+              m: { ut_metadata: 1 },
+              v: 'WebTorrent Enhanced Metadata',
+              metadata_size: torrent.metadata ? torrent.metadata.length : undefined
+            };
+            
+            wire.extended('handshake', Buffer.from(JSON.stringify(extendedHandshake)));
+            
+          } catch (err) {
+            result.actions.push(`⚠️ Error setting up new wire ${wire.remoteAddress}: ${err.message}`);
+          }
+        }, 500);
+      };
+      
+      // Step 3: Enhanced announce with metadata flags
+      result.actions.push('📢 Enhanced announce with metadata support flags');
+      
+      try {
+        if (typeof torrent.announce === 'function') {
+          torrent.announce();
+        }
+        
+        // Custom DHT announce with metadata support
+        if (torrent.discovery?.dht) {
+          const announceOpts = {
+            port: 6881,
+            metadata: true,
+            extensions: ['ut_metadata']
+          };
+          
+          torrent.discovery.dht.announce(torrent.infoHash, announceOpts);
+          result.actions.push('✅ DHT announce with metadata flags');
+        }
+      } catch (announceErr) {
+        result.actions.push(`⚠️ Announce error: ${announceErr.message}`);
+      }
+      
+      // Step 4: Wait for metadata with enhanced monitoring
+      result.actions.push('⏳ Starting enhanced metadata wait (90 seconds)');
+      
+      const maxWaitTime = 90000;
+      const startTime = Date.now();
+      
+      return new Promise(function(resolve) {
+        const checker = Meteor.setInterval(function() {
+          const elapsed = Date.now() - startTime;
+          const status = {
+            ready: torrent.ready,
+            files: torrent.files?.length || 0,
+            peers: torrent.numPeers,
+            progress: Math.round(torrent.progress * 100),
+            wires: torrent.wires?.length || 0
+          };
+          
+          result.actions.push(`📊 Check ${elapsed}ms: ready=${status.ready}, files=${status.files}, peers=${status.peers}`);
+          
+          // Success condition
+          if (torrent.ready && torrent.files && torrent.files.length > 0) {
+            Meteor.clearInterval(checker);
+            result.success = true;
+            result.finalStatus = status;
+            result.actions.push(`🎉 COMPLETE SUCCESS: Metadata received after ${elapsed}ms!`);
+            
+            // Update database
+            WebTorrentServer._updateTorrentRecord(torrent);
+            
+            resolve(result);
+            return;
+          }
+          
+          // Re-apply fixes every 15 seconds
+          if (elapsed % 15000 < 2000) {
+            result.actions.push('🔄 Re-applying metadata fixes...');
+            
+            torrent.wires?.forEach(function(wire) {
+              if (!wire.ut_metadata) {
+                try {
+                  const ut_metadata = require('ut_metadata');
+                  wire.use(ut_metadata());
+                } catch (e) {
+                  // Ignore errors
+                }
+              }
+              
+              if (wire.ut_metadata?.fetch) {
+                wire.ut_metadata.fetch();
+              }
+            });
+          }
+          
+          // Timeout
+          if (elapsed >= maxWaitTime) {
+            Meteor.clearInterval(checker);
+            result.success = false;
+            result.finalStatus = status;
+            result.actions.push(`⏰ Timeout after ${elapsed}ms`);
+            resolve(result);
+          }
+        }, 2000);
+      });
+      
+    } catch (error) {
+      console.error('Complete metadata fix error:', error);
+      result.error = error.message;
+      result.actions.push(`❌ Fatal error: ${error.message}`);
+      return result;
+    }
+  },
+
+  /**
+   * Enhanced seeding torrent metadata sharing fix
+   * This specifically fixes the seeding side to properly advertise and share metadata
+   */
+  'torrents.fixSeedingMetadata': function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`🌱 FIXING SEEDING METADATA for torrent ${infoHash}`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      actions: [],
+      success: false
+    };
+    
+    try {
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        throw new Error('Torrent not found in client');
+      }
+      
+      if (!torrent.metadata) {
+        throw new Error('Torrent has no metadata to share');
+      }
+      
+      result.actions.push(`🌱 Fixing seeding metadata for: ${torrent.name}`);
+      result.actions.push(`📊 Current: files=${torrent.files.length}, peers=${torrent.numPeers}, metadata=${!!torrent.metadata}`);
+      
+      // Fix all existing wire connections
+      if (torrent.wires && torrent.wires.length > 0) {
+        torrent.wires.forEach(function(wire, index) {
+          result.actions.push(`🔧 Fixing wire ${index}: ${wire.remoteAddress}`);
+          
+          try {
+            // Force install ut_metadata with metadata
+            const ut_metadata = require('ut_metadata');
+            
+            // Remove existing extension if present
+            if (wire.ut_metadata) {
+              delete wire.ut_metadata;
+            }
+            
+            // Install fresh extension with metadata
+            wire.use(ut_metadata(torrent.metadata));
+            result.actions.push(`✅ Installed ut_metadata with metadata for ${wire.remoteAddress}`);
+            
+            // Force extended handshake with metadata advertisement
+            const extendedHandshake = {
+              m: {
+                ut_metadata: 1
+              },
+              v: 'WebTorrent Seeding Enhanced',
+              metadata_size: torrent.metadata.length,
+              reqq: 250
+            };
+            
+            wire.extended('handshake', Buffer.from(JSON.stringify(extendedHandshake)));
+            result.actions.push(`🤝 Sent seeding handshake to ${wire.remoteAddress}`);
+            
+            // Set up aggressive metadata sharing
+            wire.on('extended', function(ext, buf) {
+              if (ext === 'ut_metadata') {
+                result.actions.push(`📤 Metadata request from ${wire.remoteAddress}, responding immediately`);
+                
+                try {
+                  // Parse the request
+                  const request = JSON.parse(buf.toString());
+                  
+                  if (request.msg_type === 0) { // request
+                    // Send metadata immediately
+                    const response = {
+                      msg_type: 1, // data
+                      piece: request.piece || 0,
+                      total_size: torrent.metadata.length
+                    };
+                    
+                    const responseBuffer = Buffer.concat([
+                      Buffer.from(JSON.stringify(response)),
+                      torrent.metadata
+                    ]);
+                    
+                    wire.extended('ut_metadata', responseBuffer);
+                    result.actions.push(`✅ Sent metadata to ${wire.remoteAddress}`);
+                  }
+                } catch (responseErr) {
+                  result.actions.push(`⚠️ Error responding to metadata request: ${responseErr.message}`);
+                }
+              }
+            });
+            
+          } catch (wireErr) {
+            result.actions.push(`❌ Error fixing wire ${wire.remoteAddress}: ${wireErr.message}`);
+          }
+        });
+      }
+      
+      // Override wire handling for new connections
+      const originalOnWire = torrent._onWire;
+      torrent._onWire = function(wire) {
+        result.actions.push(`🔌 New seeding connection: ${wire.remoteAddress}`);
+        
+        // Call original
+        if (originalOnWire) {
+          originalOnWire.call(this, wire);
+        }
+        
+        // Immediately set up metadata sharing
+        setTimeout(function() {
+          try {
+            const ut_metadata = require('ut_metadata');
+            wire.use(ut_metadata(torrent.metadata));
+            
+            const extendedHandshake = {
+              m: { ut_metadata: 1 },
+              v: 'WebTorrent Seeding Enhanced',
+              metadata_size: torrent.metadata.length
+            };
+            
+            wire.extended('handshake', Buffer.from(JSON.stringify(extendedHandshake)));
+            result.actions.push(`✅ Auto-setup metadata sharing for new connection ${wire.remoteAddress}`);
+          } catch (err) {
+            result.actions.push(`⚠️ Error setting up new seeding connection: ${err.message}`);
+          }
+        }, 100);
+      };
+      
+      result.success = true;
+      result.actions.push('🎉 Seeding metadata fix applied successfully');
+      
+      return result;
+      
+    } catch (error) {
+      console.error('Seeding metadata fix error:', error);
+      result.error = error.message;
+      result.actions.push(`❌ Error: ${error.message}`);
+      return result;
+    }
   }
   
 });
