@@ -2,6 +2,7 @@
 
 import { Meteor } from 'meteor/meteor';
 import { get } from 'lodash';
+import fs from 'fs';
 
 Meteor.startup(async () => {
   console.log('Starting FHIR P2P server with enhanced environment configuration...');
