@@ -44,5 +44,22 @@ export const Settings = {
       console.error(`Error retrieving setting '${path}':`, err);
       return defaultValue;
     }
+  },
+  
+  /**
+   * Get WebTorrent client configuration
+   * @return {Object} WebTorrent client configuration
+   */
+  getWebTorrentConfig: function() {
+    return {
+      tracker: this.get('public.webtorrent.trackers', [
+        'wss://tracker.openwebtorrent.com'
+      ]),
+      announceList: this.get('public.webtorrent.announceList', [
+        ['wss://tracker.openwebtorrent.com']
+      ]),
+      dht: this.get('public.webtorrent.dht', true),
+      webSeeds: this.get('public.webtorrent.webSeeds', true)
+    };
   }
 };
