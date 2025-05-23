@@ -378,5 +378,418 @@ Meteor.methods({
   },
 
 
-
+/**
+   * Comprehensive wire state analysis to debug the "undefined peer" issue
+   */
+  'debug.analyzeWireStates': function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`🔬 DEEP WIRE ANALYSIS for torrent ${infoHash}`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      torrentState: {},
+      wireAnalysis: [],
+      clientState: {},
+      recommendations: []
+    };
+    
+    try {
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        result.error = 'Torrent not found in WebTorrentServer';
+        return result;
+      }
+      
+      // Analyze torrent state
+      result.torrentState = {
+        name: torrent.name,
+        ready: torrent.ready,
+        destroyed: torrent.destroyed,
+        paused: torrent.paused,
+        numPeers: torrent.numPeers,
+        wiresLength: torrent.wires ? torrent.wires.length : 0,
+        wiresExists: !!torrent.wires,
+        metadata: !!torrent.metadata,
+        metadataSize: torrent.metadata ? torrent.metadata.length : 0,
+        infoHash: torrent.infoHash
+      };
+      
+      // Deep wire analysis
+      if (torrent.wires && Array.isArray(torrent.wires)) {
+        result.wireAnalysis = torrent.wires.map(function(wire, index) {
+          const analysis = {
+            index: index,
+            exists: !!wire,
+            type: typeof wire,
+            constructorName: wire ? wire.constructor.name : null
+          };
+          
+          if (wire) {
+            // Basic wire properties
+            analysis.basic = {
+              remoteAddress: wire.remoteAddress,
+              remotePort: wire.remotePort,
+              destroyed: wire.destroyed,
+              readable: wire.readable,
+              writable: wire.writable,
+              connected: wire._connected,
+              type: wire.type
+            };
+            
+            // Check for undefined/null remoteAddress specifically
+            analysis.addressIssues = {
+              remoteAddressUndefined: wire.remoteAddress === undefined,
+              remoteAddressNull: wire.remoteAddress === null,
+              remoteAddressEmpty: wire.remoteAddress === '',
+              remoteAddressType: typeof wire.remoteAddress,
+              hasSocket: !!wire._socket,
+              socketRemoteAddress: wire._socket ? wire._socket.remoteAddress : 'no socket',
+              socketReadyState: wire._socket ? wire._socket.readyState : 'no socket'
+            };
+            
+            // Protocol state
+            analysis.protocol = {
+              handshakeComplete: wire._handshakeComplete,
+              extended: !!wire.extended,
+              peerExtended: !!wire.peerExtended,
+              peerExtensions: wire.peerExtensions ? Object.keys(wire.peerExtensions) : [],
+              amInterested: wire.amInterested,
+              amChoking: wire.amChoking,
+              peerInterested: wire.peerInterested,
+              peerChoking: wire.peerChoking
+            };
+            
+            // Extension analysis
+            analysis.extensions = {
+              hasUtMetadata: !!wire.ut_metadata,
+              utMetadataType: typeof wire.ut_metadata,
+              utMetadataId: wire.ut_metadata ? wire.ut_metadata.id : null,
+              extensionCount: wire._extensions ? Object.keys(wire._extensions).length : 0,
+              extensionNames: wire._extensions ? Object.keys(wire._extensions) : []
+            };
+            
+            // Error states
+            analysis.errors = {
+              hasError: !!wire._error,
+              errorMessage: wire._error ? wire._error.message : null,
+              lastError: wire._lastError ? wire._lastError.message : null
+            };
+            
+            // Connection timing
+            analysis.timing = {
+              created: wire._created || null,
+              connected: wire._connectedAt || null,
+              handshaked: wire._handshakedAt || null,
+              age: wire._created ? Date.now() - wire._created : null
+            };
+            
+          } else {
+            // Wire is null/undefined
+            analysis.nullWireDetails = {
+              arrayElement: `Array element ${index} is ${wire}`,
+              typeofResult: typeof wire,
+              stringValue: String(wire)
+            };
+          }
+          
+          return analysis;
+        });
+      } else {
+        result.wireAnalysis = [{
+          error: 'torrent.wires is not an array',
+          wiresType: typeof torrent.wires,
+          wiresValue: torrent.wires
+        }];
+      }
+      
+      // Client state analysis
+      const client = WebTorrentServer.getClient();
+      if (client) {
+        result.clientState = {
+          destroyed: client.destroyed,
+          torrentsCount: client.torrents ? client.torrents.length : 0,
+          maxConns: client.maxConns,
+          nodeId: client.nodeId ? client.nodeId.toString('hex') : null,
+          listening: client.listening,
+          tcpPort: client.tcpPort,
+          udpPort: client.udpPort
+        };
+        
+        // Check if this torrent exists in client's torrents array
+        const clientTorrent = client.get(infoHash);
+        result.clientState.hasTorrent = !!clientTorrent;
+        result.clientState.torrentMatch = clientTorrent === torrent;
+      }
+      
+      // Generate specific recommendations
+      const undefinedWires = result.wireAnalysis.filter(w => !w.exists || w.addressIssues?.remoteAddressUndefined);
+      const incompleteHandshakes = result.wireAnalysis.filter(w => w.exists && !w.protocol?.handshakeComplete);
+      const missingExtensions = result.wireAnalysis.filter(w => w.exists && !w.extensions?.hasUtMetadata);
+      
+      if (undefinedWires.length > 0) {
+        result.recommendations.push(`🚨 CRITICAL: ${undefinedWires.length} wire(s) have undefined remoteAddress - this is the source of your error`);
+        result.recommendations.push('This indicates wires are being created but not fully initialized before diagnosis runs');
+      }
+      
+      if (incompleteHandshakes.length > 0) {
+        result.recommendations.push(`⚠️ ${incompleteHandshakes.length} wire(s) have incomplete handshakes`);
+        result.recommendations.push('Add wire state checking before attempting metadata operations');
+      }
+      
+      if (missingExtensions.length > 0) {
+        result.recommendations.push(`🔧 ${missingExtensions.length} wire(s) missing ut_metadata extension`);
+        result.recommendations.push('Extension installation needs to wait for handshake completion');
+      }
+      
+      // Check for common patterns
+      const hasNullWires = result.wireAnalysis.some(w => w.nullWireDetails);
+      if (hasNullWires) {
+        result.recommendations.push('🚨 FOUND NULL WIRES: Array contains null/undefined elements - memory corruption or cleanup issue');
+      }
+      
+      const hasSocketIssues = result.wireAnalysis.some(w => w.addressIssues?.hasSocket === false);
+      if (hasSocketIssues) {
+        result.recommendations.push('🔌 Socket connectivity issues detected - network layer problems');
+      }
+      
+      const hasDestroyedWires = result.wireAnalysis.some(w => w.basic?.destroyed === true);
+      if (hasDestroyedWires) {
+        result.recommendations.push('💀 Destroyed wires still in array - cleanup issue in WebTorrent');
+      }
+      
+      console.log('🔬 Wire analysis completed:', result);
+      return result;
+      
+    } catch (error) {
+      console.error('Error in wire analysis:', error);
+      result.error = error.message;
+      result.stackTrace = error.stack;
+      return result;
+    }
+  },
+  
+  /**
+   * Test wire state changes over time
+   */
+  'debug.monitorWireStates': function(infoHash, durationMs = 30000) {
+    check(infoHash, String);
+    check(durationMs, Number);
+    
+    console.log(`📊 MONITORING WIRE STATES for ${durationMs}ms`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      snapshots: [],
+      changes: [],
+      duration: durationMs
+    };
+    
+    const torrent = WebTorrentServer.getTorrent(infoHash);
+    if (!torrent) {
+      result.error = 'Torrent not found';
+      return result;
+    }
+    
+    let previousState = null;
+    const startTime = Date.now();
+    
+    // Take snapshots every 2 seconds
+    const intervalId = Meteor.setInterval(function() {
+      const elapsed = Date.now() - startTime;
+      
+      if (elapsed >= durationMs) {
+        Meteor.clearInterval(intervalId);
+        return;
+      }
+      
+      const snapshot = {
+        timestamp: new Date(),
+        elapsed: elapsed,
+        wireCount: torrent.wires ? torrent.wires.length : 0,
+        wires: []
+      };
+      
+      if (torrent.wires) {
+        snapshot.wires = torrent.wires.map(function(wire, index) {
+          return {
+            index: index,
+            exists: !!wire,
+            remoteAddress: wire ? wire.remoteAddress : undefined,
+            destroyed: wire ? wire.destroyed : undefined,
+            handshakeComplete: wire ? wire._handshakeComplete : undefined,
+            hasUtMetadata: wire ? !!wire.ut_metadata : false
+          };
+        });
+      }
+      
+      result.snapshots.push(snapshot);
+      
+      // Detect changes
+      if (previousState) {
+        const changes = [];
+        
+        if (snapshot.wireCount !== previousState.wireCount) {
+          changes.push(`Wire count changed: ${previousState.wireCount} → ${snapshot.wireCount}`);
+        }
+        
+        // Check for new undefined addresses
+        const newUndefined = snapshot.wires.filter(w => w.remoteAddress === undefined).length;
+        const oldUndefined = previousState.wires.filter(w => w.remoteAddress === undefined).length;
+        
+        if (newUndefined !== oldUndefined) {
+          changes.push(`Undefined addresses changed: ${oldUndefined} → ${newUndefined}`);
+        }
+        
+        if (changes.length > 0) {
+          result.changes.push({
+            timestamp: new Date(),
+            elapsed: elapsed,
+            changes: changes
+          });
+        }
+      }
+      
+      previousState = snapshot;
+      
+    }, 2000);
+    
+    // Return immediately, monitoring continues in background
+    return {
+      ...result,
+      status: 'monitoring started',
+      message: `Monitoring ${infoHash} for ${durationMs}ms, check logs for real-time updates`
+    };
+  },
+  
+  /**
+   * Safe wire operation wrapper that checks wire state first
+   */
+  'debug.safeWireOperation': function(infoHash, operation) {
+    check(infoHash, String);
+    check(operation, String);
+    
+    console.log(`🛡️ SAFE WIRE OPERATION: ${operation} for ${infoHash}`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      operation: operation,
+      results: [],
+      errors: []
+    };
+    
+    try {
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        throw new Error('Torrent not found');
+      }
+      
+      if (!torrent.wires || !Array.isArray(torrent.wires)) {
+        throw new Error('No wires array available');
+      }
+      
+      torrent.wires.forEach(function(wire, index) {
+        const wireResult = {
+          index: index,
+          operation: operation,
+          success: false,
+          message: '',
+          preChecks: {}
+        };
+        
+        try {
+          // Pre-operation safety checks
+          wireResult.preChecks = {
+            wireExists: !!wire,
+            hasRemoteAddress: wire ? !!wire.remoteAddress : false,
+            notDestroyed: wire ? !wire.destroyed : false,
+            handshakeComplete: wire ? !!wire._handshakeComplete : false,
+            hasExtended: wire ? !!wire.extended : false,
+            hasSocket: wire ? !!wire._socket : false
+          };
+          
+          // Only proceed if all critical checks pass
+          const criticalChecks = ['wireExists', 'hasRemoteAddress', 'notDestroyed'];
+          const criticalPass = criticalChecks.every(check => wireResult.preChecks[check]);
+          
+          if (!criticalPass) {
+            wireResult.message = `Critical pre-checks failed: ${JSON.stringify(wireResult.preChecks)}`;
+            result.errors.push(`Wire ${index}: ${wireResult.message}`);
+            result.results.push(wireResult);
+            return;
+          }
+          
+          // Perform the requested operation safely
+          switch (operation) {
+            case 'diagnose':
+              wireResult.diagnosis = {
+                address: `${wire.remoteAddress}:${wire.remotePort}`,
+                extensions: wire.peerExtensions ? Object.keys(wire.peerExtensions) : [],
+                supportsMetadata: !!(wire.peerExtensions && wire.peerExtensions.ut_metadata),
+                hasUtMetadata: !!wire.ut_metadata,
+                interested: wire.amInterested,
+                choking: wire.amChoking
+              };
+              wireResult.success = true;
+              wireResult.message = 'Diagnosis completed safely';
+              break;
+              
+            case 'install-metadata':
+              if (wireResult.preChecks.handshakeComplete && wireResult.preChecks.hasExtended) {
+                const ut_metadata = require('ut_metadata');
+                wire.use(ut_metadata());
+                wireResult.success = true;
+                wireResult.message = 'ut_metadata installed safely';
+              } else {
+                wireResult.message = 'Handshake/extended protocol not ready for metadata installation';
+              }
+              break;
+              
+            case 'request-metadata':
+              if (wire.ut_metadata && typeof wire.ut_metadata.fetch === 'function') {
+                wire.ut_metadata.fetch();
+                wireResult.success = true;
+                wireResult.message = 'Metadata requested safely';
+              } else {
+                wireResult.message = 'ut_metadata extension not available for request';
+              }
+              break;
+              
+            default:
+              wireResult.message = `Unknown operation: ${operation}`;
+          }
+          
+        } catch (wireError) {
+          wireResult.message = `Wire operation error: ${wireError.message}`;
+          result.errors.push(`Wire ${index}: ${wireError.message}`);
+        }
+        
+        result.results.push(wireResult);
+      });
+      
+      // Summary
+      const successful = result.results.filter(r => r.success).length;
+      const total = result.results.length;
+      
+      result.summary = {
+        total: total,
+        successful: successful,
+        failed: total - successful,
+        successRate: total > 0 ? Math.round((successful / total) * 100) : 0
+      };
+      
+      console.log(`🛡️ Safe operation completed: ${successful}/${total} successful`);
+      return result;
+      
+    } catch (error) {
+      console.error('Error in safe wire operation:', error);
+      result.error = error.message;
+      return result;
+    }
+  }
 });

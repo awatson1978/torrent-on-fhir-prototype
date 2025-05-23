@@ -901,10 +901,15 @@ export const WebTorrentServer = {
         originalOnWire.call(this, wire);
       }
       
-      // Install metadata sharing immediately
+      // Wait longer and validate before installing metadata
       Meteor.setTimeout(function() {
-        self._installMetadataOnWire(wire, torrent, 'new');
-      }, 500); // Small delay to ensure wire is initialized
+        if (wire && wire.remoteAddress && !wire.destroyed) {
+          console.log(`🔌 Wire initialized: ${wire.remoteAddress} - installing metadata`);
+          self._installMetadataOnWire(wire, torrent, 'new');
+        } else {
+          console.log(`🔌 Wire failed to initialize properly: exists=${!!wire}, address=${wire?.remoteAddress}, destroyed=${wire?.destroyed}`);
+        }
+      }, 2000); // Longer delay to ensure full initialization
     };
     
     console.log(`✅ Metadata sharing configured for ${torrent.name}`);
@@ -915,13 +920,63 @@ export const WebTorrentServer = {
    */
   _installMetadataOnWire: function(wire, torrent, connectionType) {
     try {
+      // CRITICAL: Validate wire state first
+      if (!wire || !wire.remoteAddress || wire.destroyed) {
+        console.log(`❌ Cannot install metadata on invalid wire: exists=${!!wire}, address=${wire?.remoteAddress}, destroyed=${wire?.destroyed}`);
+        return;
+      }
+      
       console.log(`📡 Installing metadata on ${connectionType} connection: ${wire.remoteAddress}`);
+      
+      // Check if handshake is complete - CRITICAL TIMING CHECK
+      if (!wire._handshakeComplete) {
+        console.log(`   ⏳ Handshake not complete for ${wire.remoteAddress}, waiting...`);
+        
+        // Wait for handshake completion
+        const onHandshake = function() {
+          console.log(`   ✅ Handshake completed for ${wire.remoteAddress}, retrying metadata installation`);
+          self._installMetadataOnWire(wire, torrent, connectionType + '-delayed');
+        };
+        
+        wire.once('handshake', onHandshake);
+        
+        // Timeout safety - don't wait forever
+        Meteor.setTimeout(function() {
+          wire.removeListener('handshake', onHandshake);
+          console.log(`   ⏰ Handshake timeout for ${wire.remoteAddress}`);
+        }, 15000);
+        
+        return;
+      }
       
       // Check if peer supports extended protocol
       if (!wire.extended) {
         console.log(`   ⚠️ Peer ${wire.remoteAddress} doesn't support extended protocol`);
         return;
       }
+
+      // Additional check: ensure peer has advertised extended support
+      if (!wire.peerExtended) {
+        console.log(`   ⏳ Peer ${wire.remoteAddress} hasn't completed extended handshake yet, waiting...`);
+        
+        const onExtended = function() {
+          console.log(`   ✅ Extended handshake completed for ${wire.remoteAddress}, retrying metadata installation`);
+          self._installMetadataOnWire(wire, torrent, connectionType + '-extended-delayed');
+        };
+        
+        wire.once('extended', onExtended);
+        
+        // Timeout safety
+        Meteor.setTimeout(function() {
+          wire.removeListener('extended', onExtended);
+          console.log(`   ⏰ Extended handshake timeout for ${wire.remoteAddress}`);
+        }, 10000);
+        
+        return;
+      }
+      
+      // NOW SAFE: Wire is fully established and ready for extensions
+      
       
       // Remove any existing ut_metadata
       if (wire.ut_metadata) {

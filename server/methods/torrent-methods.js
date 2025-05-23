@@ -1773,6 +1773,12 @@ Meteor.methods({
       // Analyze each wire connection in detail
       if (torrent.wires && torrent.wires.length > 0) {
         torrent.wires.forEach(function(wire, index) {
+            // Validate wire before accessing properties
+          if (!wire || !wire.remoteAddress || wire.destroyed) {
+            console.log(`Skipping invalid wire ${index}: exists=${!!wire}, address=${wire?.remoteAddress}, destroyed=${wire?.destroyed}`);
+            return;
+          }
+          
           const wireInfo = {
             index: index,
             address: wire.remoteAddress,

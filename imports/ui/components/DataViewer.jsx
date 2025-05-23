@@ -238,13 +238,7 @@ function DataViewer({ selectedTorrent }) {
         </Alert>
       )}
       
-      {/* Enhanced Debug Panel */}
-      <Collapse in={showDebugPanel} timeout={300}>
-        <MetadataDebugPanel 
-          torrentHash={selectedTorrent.infoHash} 
-          torrentName={selectedTorrent.name}
-        />
-      </Collapse>
+
       
       {/* Loading State */}
       {loading && (
@@ -404,6 +398,14 @@ function DataViewer({ selectedTorrent }) {
           </Button>
         </Box>
       )}
+
+      {/* Enhanced Debug Panel */}
+      <Collapse in={showDebugPanel} timeout={300}>
+        <MetadataDebugPanel 
+          torrentHash={selectedTorrent.infoHash} 
+          torrentName={selectedTorrent.name}
+        />
+      </Collapse>
     </Box>
   );
 }
