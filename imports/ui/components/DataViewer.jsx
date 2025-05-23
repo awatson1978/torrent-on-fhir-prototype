@@ -136,33 +136,6 @@ function DataViewer({ selectedTorrent }) {
     document.body.removeChild(element);
   }
   
-  // Try auto-fix with enhanced metadata exchange
-  function handleAutoFix() {
-    setAutoFixAttempted(true);
-    setLoading(true);
-    
-    Meteor.call('torrents.forceCompleteMetadataFix', selectedTorrent.infoHash, function(err, result) {
-      if (err) {
-        console.error('Auto-fix error:', err);
-        setError(`Auto-fix failed: ${err.message}`);
-        setLoading(false);
-      } else {
-        console.log('Auto-fix result:', result);
-        
-        if (result.success) {
-          // Wait a moment then retry fetching files
-          setTimeout(function() {
-            setRetryCount(prev => prev + 1);
-            fetchFileContents();
-          }, 2000);
-        } else {
-          setLoading(false);
-          setError('Auto-fix completed but metadata exchange was not successful. Use the debug panel for advanced troubleshooting.');
-        }
-      }
-    });
-  }
-  
   // Retry fetching files
   function handleRetry() {
     setRetryCount(prev => prev + 1);
