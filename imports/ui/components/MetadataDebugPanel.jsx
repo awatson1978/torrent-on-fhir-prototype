@@ -674,7 +674,7 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
               2. Emergency Fix (Client 2)
             </Button>
             
-            <Button
+            {/* <Button
               variant="contained"
               size="small"
               color="success"
@@ -683,7 +683,7 @@ function MetadataDebugPanel({ torrentHash, torrentName }) {
               disabled={loading}
             >
               3. Fix Seeding Metadata (Client 1)
-            </Button>
+            </Button> */}
           </Box>
           
           <Alert severity="info" sx={{ mt: 2 }}>
