@@ -1827,6 +1827,190 @@ Meteor.methods({
       result.diagnosis.error = error.message;
       return result;
     }
+  },
+
+  /**
+   * Emergency fix for metadata exchange issues
+   * This method can be called when peers are connected but metadata isn't being exchanged
+   */
+  'torrents.emergencyMetadataExchangeFix': async function(infoHash) {
+    check(infoHash, String);
+    
+    console.log(`🚨 EMERGENCY METADATA EXCHANGE FIX for ${infoHash}`);
+    
+    const result = {
+      timestamp: new Date(),
+      infoHash: infoHash,
+      actions: [],
+      success: false
+    };
+    
+    try {
+      // Get the torrent
+      const torrent = WebTorrentServer.getTorrent(infoHash);
+      
+      if (!torrent) {
+        throw new Error('Torrent not found in WebTorrent client');
+      }
+      
+      result.actions.push(`Found torrent: ${torrent.name}`);
+      result.actions.push(`Status: ready=${torrent.ready}, files=${torrent.files?.length || 0}, peers=${torrent.numPeers}`);
+      
+      // Determine if this is a seeding or downloading torrent
+      const isSeeding = torrent.progress >= 1 || (torrent.ready && torrent.files && torrent.files.length > 0);
+      result.actions.push(`Role: ${isSeeding ? 'SEEDING' : 'DOWNLOADING'}`);
+      
+      // Apply comprehensive wire fixes
+      result.actions.push('Applying WebTorrent wire protocol fixes...');
+      WebTorrentWireFix.applyTorrentFixes(torrent, isSeeding);
+      result.actions.push('✅ Wire protocol fixes applied');
+      
+      // For seeding torrents, ensure metadata object exists
+      if (isSeeding) {
+        if (!torrent.metadata && torrent.info) {
+          try {
+            const bencode = require('bencode');
+            torrent.metadata = bencode.encode(torrent.info);
+            result.actions.push(`✅ Created metadata object: ${torrent.metadata.length} bytes`);
+          } catch (err) {
+            result.actions.push(`⚠️ Could not create metadata: ${err.message}`);
+          }
+        } else if (torrent.metadata) {
+          result.actions.push(`✅ Metadata already exists: ${torrent.metadata.length} bytes`);
+        } else {
+          result.actions.push('⚠️ No torrent.info available to create metadata');
+        }
+      }
+      
+      // Process existing wires
+      if (torrent.wires && torrent.wires.length > 0) {
+        result.actions.push(`Processing ${torrent.wires.length} existing wire connections...`);
+        
+        torrent.wires.forEach(function(wire, index) {
+          if (!wire) {
+            result.actions.push(`Wire ${index}: NULL/UNDEFINED`);
+            return;
+          }
+          
+          const wireStatus = {
+            address: wire.remoteAddress || 'no address',
+            destroyed: wire.destroyed,
+            handshake: wire._handshakeComplete,
+            hasUtMetadata: !!wire.ut_metadata
+          };
+          
+          result.actions.push(`Wire ${index}: ${wireStatus.address} - handshake:${wireStatus.handshake}, ut_metadata:${wireStatus.hasUtMetadata}`);
+          
+          // Re-initialize this wire
+          WebTorrentWireFix.initializeWire(wire, torrent, index, isSeeding);
+        });
+      } else {
+        result.actions.push('No wire connections found');
+      }
+      
+      // Force announce to get more peers
+      result.actions.push('Forcing tracker announce...');
+      try {
+        if (typeof torrent.announce === 'function') {
+          torrent.announce();
+          result.actions.push('✅ Announced to trackers');
+        }
+      } catch (err) {
+        result.actions.push(`⚠️ Announce error: ${err.message}`);
+      }
+      
+      // For downloading torrents, wait for metadata
+      if (!isSeeding && !torrent.ready) {
+        result.actions.push('⏳ Waiting for metadata (30 seconds)...');
+        
+        const startTime = Date.now();
+        const maxWait = 30000;
+        
+        await new Promise(function(resolve) {
+          const checkInterval = Meteor.setInterval(function() {
+            const elapsed = Date.now() - startTime;
+            
+            if (torrent.ready && torrent.files && torrent.files.length > 0) {
+              Meteor.clearInterval(checkInterval);
+              result.actions.push(`✅ Metadata received after ${Math.round(elapsed/1000)}s`);
+              result.success = true;
+              resolve();
+            } else if (elapsed >= maxWait) {
+              Meteor.clearInterval(checkInterval);
+              result.actions.push(`⏰ Timeout after ${Math.round(elapsed/1000)}s`);
+              result.success = false;
+              resolve();
+            }
+          }, 1000);
+        });
+      } else {
+        result.success = true;
+      }
+      
+      // Final status
+      result.finalStatus = {
+        ready: torrent.ready,
+        files: torrent.files?.length || 0,
+        peers: torrent.numPeers,
+        progress: Math.round(torrent.progress * 100)
+      };
+      
+      return result;
+      
+    } catch (error) {
+      console.error('Emergency metadata fix error:', error);
+      result.error = error.message;
+      result.actions.push(`❌ Error: ${error.message}`);
+      return result;
+    }
+  },
+  
+  /**
+   * Quick status check for a torrent's metadata exchange
+   */
+  'torrents.checkMetadataStatus': function(infoHash) {
+    check(infoHash, String);
+    
+    const torrent = WebTorrentServer.getTorrent(infoHash);
+    
+    if (!torrent) {
+      return { error: 'Torrent not found' };
+    }
+    
+    const status = {
+      name: torrent.name,
+      ready: torrent.ready,
+      hasMetadata: !!torrent.metadata,
+      metadataSize: torrent.metadata?.length || 0,
+      files: torrent.files?.length || 0,
+      peers: torrent.numPeers,
+      wires: []
+    };
+    
+    if (torrent.wires) {
+      torrent.wires.forEach(function(wire, index) {
+        if (!wire) return;
+        
+        status.wires.push({
+          index: index,
+          address: wire.remoteAddress || 'connecting...',
+          handshake: !!wire._handshakeComplete,
+          hasUtMetadata: !!wire.ut_metadata,
+          peerSupportsMetadata: !!(wire.peerExtensions && wire.peerExtensions.ut_metadata)
+        });
+      });
+    }
+    
+    // Analysis
+    status.analysis = {
+      role: torrent.progress >= 1 ? 'seeding' : 'downloading',
+      wiresWithAddress: status.wires.filter(w => w.address !== 'connecting...').length,
+      wiresWithHandshake: status.wires.filter(w => w.handshake).length,
+      wiresWithMetadata: status.wires.filter(w => w.hasUtMetadata).length,
+      peersSupporting: status.wires.filter(w => w.peerSupportsMetadata).length
+    };
+    
+    return status;
   }
 
 
