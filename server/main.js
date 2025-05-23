@@ -1,7 +1,7 @@
 // server/main.js - Enhanced environment variable integration
 
 import { Meteor } from 'meteor/meteor';
-import { get } from 'lodash';
+import { get, set } from 'lodash';
 import fs from 'fs';
 
 import './methods/torrent-methods';
@@ -48,60 +48,39 @@ Meteor.startup(async () => {
       'WEBTORRENT_ARCH_OVERRIDE': 'public.webtorrent.archOverride'
     };
     
-    // Initialize settings structure
+    // Initialize settings structure if needed
     if (!Meteor.settings) {
       Meteor.settings = {};
-    }
-    if (!Meteor.settings.public) {
-      Meteor.settings.public = {};
-    }
-    if (!Meteor.settings.private) {
-      Meteor.settings.private = {};
-    }
-    if (!Meteor.settings.public.webtorrent) {
-      Meteor.settings.public.webtorrent = {};
     }
     
     // Process environment variables
     Object.keys(envMappings).forEach(function(envVar) {
       if (process.env[envVar] !== undefined) {
         const settingPath = envMappings[envVar];
-        const parts = settingPath.split('.');
-        
-        let current = Meteor.settings;
-        for (let i = 0; i < parts.length - 1; i++) {
-          const part = parts[i];
-          if (!current[part]) {
-            current[part] = {};
-          }
-          current = current[part];
-        }
-        
-        const lastPart = parts[parts.length - 1];
         let value = process.env[envVar];
         
         // Enhanced type parsing
         if (value === 'true') value = true;
-        if (value === 'false') value = false;
-        if (!isNaN(value) && value !== '' && !isNaN(parseFloat(value))) {
+        else if (value === 'false') value = false;
+        else if (!isNaN(value) && value !== '' && !isNaN(parseFloat(value))) {
           value = Number(value);
         }
-        
         // Handle arrays (comma-separated values)
-        if (typeof value === 'string' && value.includes(',')) {
+        else if (typeof value === 'string' && value.includes(',')) {
           value = value.split(',').map(item => item.trim());
         }
         
-        current[lastPart] = value;
+        // Use lodash set() to handle nested paths
+        set(Meteor.settings, settingPath, value);
         console.log(`Environment setting applied: ${envVar} = ${value}`);
       }
     });
     
     // Auto-detect platform if not overridden
     if (!process.env.WEBTORRENT_PLATFORM_OVERRIDE) {
-      Meteor.settings.public.webtorrent.detectedPlatform = process.platform;
-      Meteor.settings.public.webtorrent.detectedArch = process.arch;
-      Meteor.settings.public.webtorrent.detectedNodeVersion = process.version;
+      set(Meteor.settings, 'public.webtorrent.detectedPlatform', process.platform);
+      set(Meteor.settings, 'public.webtorrent.detectedArch', process.arch);
+      set(Meteor.settings, 'public.webtorrent.detectedNodeVersion', process.version);
     }
     
     // Apply intelligent defaults based on platform detection
@@ -126,61 +105,61 @@ Meteor.startup(async () => {
       
       // Apply fixes if not explicitly configured
       if (get(Meteor.settings, 'public.webtorrent.arm64Fix') === undefined) {
-        Meteor.settings.public.webtorrent.arm64Fix = true;
+        set(Meteor.settings, 'public.webtorrent.arm64Fix', true);
       }
       if (get(Meteor.settings, 'public.webtorrent.node22Compat') === undefined) {
-        Meteor.settings.public.webtorrent.node22Compat = true;
+        set(Meteor.settings, 'public.webtorrent.node22Compat', true);
       }
       if (get(Meteor.settings, 'public.webtorrent.forceTcpPort') === undefined) {
-        Meteor.settings.public.webtorrent.forceTcpPort = 7881;
+        set(Meteor.settings, 'public.webtorrent.forceTcpPort', 7881);
       }
       if (get(Meteor.settings, 'public.webtorrent.useHttpTrackers') === undefined) {
-        Meteor.settings.public.webtorrent.useHttpTrackers = true;
+        set(Meteor.settings, 'public.webtorrent.useHttpTrackers', true);
       }
       if (get(Meteor.settings, 'public.webtorrent.debugTcp') === undefined) {
-        Meteor.settings.public.webtorrent.debugTcp = true;
+        set(Meteor.settings, 'public.webtorrent.debugTcp', true);
       }
     } else if (isMacOS) {
       console.log('📱 DETECTED: macOS - applying macOS optimizations');
       
       if (get(Meteor.settings, 'public.webtorrent.forceTcpPort') === undefined) {
-        Meteor.settings.public.webtorrent.forceTcpPort = 6881;
+        set(Meteor.settings, 'public.webtorrent.forceTcpPort', 6881);
       }
       if (get(Meteor.settings, 'public.webtorrent.maxConnections') === undefined) {
-        Meteor.settings.public.webtorrent.maxConnections = 200;
+        set(Meteor.settings, 'public.webtorrent.maxConnections', 200);
       }
     } else if (platform === 'linux') {
       console.log('🐧 DETECTED: Linux - applying high-performance settings');
       
       if (get(Meteor.settings, 'public.webtorrent.maxConnections') === undefined) {
-        Meteor.settings.public.webtorrent.maxConnections = 500;
+        set(Meteor.settings, 'public.webtorrent.maxConnections', 500);
       }
       if (get(Meteor.settings, 'public.webtorrent.disableDht') === undefined) {
-        Meteor.settings.public.webtorrent.disableDht = false;
+        set(Meteor.settings, 'public.webtorrent.disableDht', false);
       }
     } else if (platform === 'win32') {
       console.log('🪟 DETECTED: Windows - applying conservative settings');
       
       if (get(Meteor.settings, 'public.webtorrent.maxConnections') === undefined) {
-        Meteor.settings.public.webtorrent.maxConnections = 150;
+        set(Meteor.settings, 'public.webtorrent.maxConnections', 150);
       }
       if (get(Meteor.settings, 'public.webtorrent.forceTcpPort') === undefined) {
-        Meteor.settings.public.webtorrent.forceTcpPort = 7881;
+        set(Meteor.settings, 'public.webtorrent.forceTcpPort', 7881);
       }
     }
     
-    // Container environment detection - now using the already imported fs
+    // Container environment detection
     if (process.env.DOCKER_CONTAINER || process.env.KUBERNETES_SERVICE_HOST || fs.existsSync('/.dockerenv')) {
       console.log('🐳 DETECTED: Container environment - applying container optimizations');
       
       if (get(Meteor.settings, 'public.webtorrent.tcpBindAddress') === undefined) {
-        Meteor.settings.public.webtorrent.tcpBindAddress = '0.0.0.0';
+        set(Meteor.settings, 'public.webtorrent.tcpBindAddress', '0.0.0.0');
       }
       if (get(Meteor.settings, 'public.webtorrent.forceTcpPort') === undefined) {
-        Meteor.settings.public.webtorrent.forceTcpPort = 0; // Let container assign port
+        set(Meteor.settings, 'public.webtorrent.forceTcpPort', 0); // Let container assign port
       }
       if (get(Meteor.settings, 'public.webtorrent.maxConnections') === undefined) {
-        Meteor.settings.public.webtorrent.maxConnections = 300;
+        set(Meteor.settings, 'public.webtorrent.maxConnections', 300);
       }
     }
   };

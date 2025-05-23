@@ -1944,7 +1944,7 @@ Meteor.startup(function() {
         console.log('🎉 Enhanced WebTorrent server initialized successfully!');
         
         // Run diagnostics
-        const diagnosis = WebTorrentServerFixed.diagnoseTcpPool();
+        const diagnosis = WebTorrentServer.diagnoseTcpPool();
         
         if (!diagnosis.tcpPoolExists) {
           console.log('🚨 WARNING: TCP pool still missing after initialization');
