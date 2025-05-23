@@ -875,7 +875,7 @@ export const WebTorrentServer = {
   _setupMetadataSharing: function(torrent) {
     const self = this;
     
-    console.log(`🔧 Setting up metadata sharing for seeding torrent: ${torrent.name}`);
+    console.log(`🔧 Setting up enhanced metadata sharing for seeding torrent: ${torrent.name}`);
     
     if (!torrent.metadata) {
       console.error('❌ Cannot setup metadata sharing - no metadata available');
@@ -886,33 +886,238 @@ export const WebTorrentServer = {
     if (torrent.wires && torrent.wires.length > 0) {
       console.log(`🔌 Fixing ${torrent.wires.length} existing connections`);
       torrent.wires.forEach(function(wire, index) {
-        self._installMetadataOnWire(wire, torrent, `existing-${index}`);
+        self._installMetadataOnWireSafe(wire, torrent, `existing-${index}`);
       });
     }
     
-    // Override _onWire to ensure all NEW connections get metadata sharing
+    // Set up enhanced wire handler for new connections
+    this._setupEnhancedWireHandler(torrent);
+    
+    console.log(`✅ Enhanced metadata sharing configured for ${torrent.name}`);
+  },
+
+  /**
+   * Enhanced wire initialization with proper timing
+   */
+  _setupEnhancedWireHandler: function(torrent) {
+    const self = this;
+    
+    console.log(`🔧 Setting up enhanced wire handler for: ${torrent.name}`);
+    
+    // Store original handler
     const originalOnWire = torrent._onWire;
     
     torrent._onWire = function(wire) {
-      console.log(`🔌 New seeding connection: ${wire.remoteAddress} - installing metadata`);
+      console.log(`🔌 New wire connection detected, starting enhanced initialization...`);
       
       // Call original handler first
       if (originalOnWire) {
         originalOnWire.call(this, wire);
       }
       
-      // Wait longer and validate before installing metadata
-      Meteor.setTimeout(function() {
-        if (wire && wire.remoteAddress && !wire.destroyed) {
-          console.log(`🔌 Wire initialized: ${wire.remoteAddress} - installing metadata`);
-          self._installMetadataOnWire(wire, torrent, 'new');
-        } else {
-          console.log(`🔌 Wire failed to initialize properly: exists=${!!wire}, address=${wire?.remoteAddress}, destroyed=${wire?.destroyed}`);
-        }
-      }, 2000); // Longer delay to ensure full initialization
+      // Enhanced wire initialization with multiple checks
+      self._initializeWireWithRetry(wire, torrent, 0);
+    };
+  },
+
+  /**
+   * Initialize wire with retry logic and proper timing
+   */
+  _initializeWireWithRetry: function(wire, torrent, attempt) {
+    const self = this;
+    const maxAttempts = 10;
+    const retryDelay = 1000; // 1 second between attempts
+    
+    if (attempt >= maxAttempts) {
+      console.log(`❌ Wire initialization failed after ${maxAttempts} attempts`);
+      return;
+    }
+    
+    // Check if wire is ready
+    const wireReady = self._isWireReady(wire);
+    
+    if (wireReady.ready) {
+      console.log(`✅ Wire ready after ${attempt} attempts: ${wire.remoteAddress}:${wire.remotePort}`);
+      
+      // Now safe to install metadata
+      if (torrent.metadata) {
+        self._installMetadataOnWireSafe(wire, torrent, `attempt-${attempt}`);
+      }
+      
+      return;
+    }
+    
+    console.log(`⏳ Wire not ready (attempt ${attempt + 1}/${maxAttempts}): ${wireReady.reason}`);
+    
+    // Retry after delay
+    Meteor.setTimeout(function() {
+      self._initializeWireWithRetry(wire, torrent, attempt + 1);
+    }, retryDelay);
+  },
+
+  /**
+   * Comprehensive wire readiness check
+   */
+  _isWireReady: function(wire) {
+    const result = {
+      ready: false,
+      reason: '',
+      details: {}
     };
     
-    console.log(`✅ Metadata sharing configured for ${torrent.name}`);
+    // Basic existence check
+    if (!wire) {
+      result.reason = 'Wire is null/undefined';
+      return result;
+    }
+    
+    // Check if destroyed
+    if (wire.destroyed) {
+      result.reason = 'Wire is destroyed';
+      result.details.destroyed = true;
+      return result;
+    }
+    
+    // Check remote address - THIS IS THE KEY CHECK
+    if (!wire.remoteAddress) {
+      result.reason = 'No remoteAddress - TCP connection not established';
+      result.details.hasRemoteAddress = false;
+      result.details.socketExists = !!wire._socket;
+      result.details.socketRemoteAddress = wire._socket ? wire._socket.remoteAddress : null;
+      return result;
+    }
+    
+    // Check port
+    if (!wire.remotePort) {
+      result.reason = 'No remotePort - connection incomplete';
+      result.details.hasRemotePort = false;
+      return result;
+    }
+    
+    // Check handshake status
+    if (!wire._handshakeComplete) {
+      result.reason = 'BitTorrent handshake not complete';
+      result.details.handshakeComplete = false;
+      return result;
+    }
+    
+    // All critical checks passed
+    result.ready = true;
+    result.reason = 'Wire is fully ready';
+    result.details = {
+      address: `${wire.remoteAddress}:${wire.remotePort}`,
+      handshakeComplete: wire._handshakeComplete,
+      hasExtended: !!wire.extended,
+      readable: wire.readable,
+      writable: wire.writable
+    };
+    
+    return result;
+  },
+
+  /**
+   * Enhanced version of _installMetadataOnWire with additional safety checks
+   */
+  _installMetadataOnWireSafe: function(wire, torrent, connectionType) {
+    try {
+      // Final safety check before installation
+      const wireCheck = this._isWireReady(wire);
+      
+      if (!wireCheck.ready) {
+        console.log(`❌ Cannot install metadata on ${connectionType}: ${wireCheck.reason}`);
+        return false;
+      }
+      
+      console.log(`📡 Installing metadata on verified ready wire (${connectionType}): ${wire.remoteAddress}:${wire.remotePort}`);
+      
+      // Check if peer supports extended protocol
+      if (!wire.extended) {
+        console.log(`   ⚠️ Peer ${wire.remoteAddress} doesn't support extended protocol`);
+        return false;
+      }
+      
+      // Remove any existing ut_metadata
+      if (wire.ut_metadata) {
+        delete wire.ut_metadata;
+        console.log(`   🗑️ Removed existing ut_metadata`);
+      }
+      
+      // Install fresh ut_metadata extension with torrent metadata
+      const ut_metadata = require('ut_metadata');
+      wire.use(ut_metadata(torrent.metadata));
+      console.log(`   ✅ Installed ut_metadata with ${torrent.metadata.length} bytes`);
+      
+      // Send proper extended handshake advertising metadata
+      const handshakeMsg = {
+        m: {
+          ut_metadata: 1
+        },
+        v: 'WebTorrent-Enhanced-Safe',
+        metadata_size: torrent.metadata.length,
+        reqq: 250
+      };
+      
+      try {
+        wire.extended('handshake', Buffer.from(JSON.stringify(handshakeMsg)));
+        console.log(`   📡 Sent enhanced handshake with metadata_size=${torrent.metadata.length}`);
+      } catch (handshakeErr) {
+        console.error(`   ❌ Handshake error: ${handshakeErr.message}`);
+        return false;
+      }
+      
+      // Set up metadata response handler
+      this._setupMetadataResponseHandler(wire, torrent);
+      
+      return true;
+      
+    } catch (installErr) {
+      console.error(`❌ Error in safe metadata installation:`, installErr.message);
+      return false;
+    }
+  },
+
+  /**
+   * Set up metadata response handler for incoming requests
+   */
+  _setupMetadataResponseHandler: function(wire, torrent) {
+    // Remove existing extended listeners to avoid duplicates
+    wire.removeAllListeners('extended');
+    
+    wire.on('extended', function(ext, buf) {
+      if (ext === 'ut_metadata') {
+        console.log(`   📤 Metadata request from ${wire.remoteAddress} - responding immediately`);
+        
+        try {
+          // Parse the request
+          let request;
+          try {
+            request = JSON.parse(buf.toString());
+          } catch (parseErr) {
+            // Handle binary request format
+            request = { msg_type: 0, piece: 0 };
+          }
+          
+          if (request.msg_type === 0) { // Request
+            // Send metadata immediately
+            const response = {
+              msg_type: 1, // data
+              piece: request.piece || 0,
+              total_size: torrent.metadata.length
+            };
+            
+            const responseBuffer = Buffer.concat([
+              Buffer.from(JSON.stringify(response)),
+              torrent.metadata
+            ]);
+            
+            wire.extended('ut_metadata', responseBuffer);
+            console.log(`   ✅ Sent ${torrent.metadata.length} bytes metadata to ${wire.remoteAddress}`);
+          }
+        } catch (responseErr) {
+          console.error(`   ❌ Error responding to metadata request: ${responseErr.message}`);
+        }
+      }
+    });
   },
   
   /**
