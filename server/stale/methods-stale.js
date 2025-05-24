@@ -18,7 +18,56 @@ Meteor.methods({
   'ping': function() {
     return `pong at ${new Date().toISOString()}`;
   },
+  'debug.getServerInfo': function() {
+    return {
+      meteorVersion: Meteor.release,
+      nodeVersion: process.version,
+      settings: {
+        webTorrent: Settings.getWebTorrentConfig(),
+        fhir: Settings.getFhirConfig(),
+        ui: Settings.getUIConfig()
+      },
+      environment: {
+        nodeEnv: process.env.NODE_ENV || 'development',
+        rootUrl: process.env.ROOT_URL || Meteor.absoluteUrl(),
+      }
+    };
+  },
 
+  'debug.getTorrentInfo': async function() {
+    const client = WebTorrentServer.getClient();
+    if (!client) return { status: 'Client not initialized' };
+    
+    const torrents = WebTorrentServer.getAllTorrents();
+    console.log(`Debug: Server has ${torrents.length} torrents loaded in WebTorrent client`);
+    
+    const collectionTorrents = await TorrentsCollection.find({}).fetchAsync();
+    console.log(`Debug: Server has ${collectionTorrents.length} torrents in the MongoDB collection`);
+    
+    const clientInfoHashes = torrents.map(t => t.infoHash);
+    const dbInfoHashes = collectionTorrents.map(t => t.infoHash);
+    
+    const missingInClient = dbInfoHashes.filter(hash => !clientInfoHashes.includes(hash));
+    const missingInDb = clientInfoHashes.filter(hash => !dbInfoHashes.includes(hash));
+    
+    console.log(`Debug: Torrents in DB but missing in client: ${missingInClient.length}`);
+    console.log(`Debug: Torrents in client but missing in DB: ${missingInDb.length}`);
+    
+    return {
+      clientTorrents: torrents.map(t => ({
+        infoHash: t.infoHash,
+        name: t.name,
+        numPeers: t.numPeers,
+        progress: t.progress
+      })),
+      dbTorrents: collectionTorrents.map(t => ({
+        infoHash: t.infoHash,
+        name: t.name
+      })),
+      missingInClient,
+      missingInDb
+    };
+  },
   'debug.getServerStatus': async function() {
     console.log('Debug: Getting full server status');
     
@@ -173,6 +222,38 @@ Meteor.methods({
       saved: saveResults
     };
   },
+  'debug.checkTorrentConnection': function(infoHash) {
+    check(infoHash, String);
+    
+    const torrent = WebTorrentServer.getTorrent(infoHash);
+    if (!torrent) {
+      return { status: 'error', message: 'Torrent not found in client' };
+    }
+    
+    // Safe announce
+    try {
+      if (typeof torrent.announce === 'function') {
+        torrent.announce();
+      } else if (torrent.discovery && typeof torrent.discovery.announce === 'function') {
+        torrent.discovery.announce();
+      }
+    } catch (e) {
+      console.warn('Error announcing torrent:', e.message);
+    }
+    
+    return {
+      status: 'success',
+      infoHash: torrent.infoHash,
+      name: torrent.name,
+      peers: torrent.numPeers,
+      trackers: torrent._trackers ? Object.keys(torrent._trackers) : [],
+      wires: (torrent.wires || []).map(wire => ({
+        peerId: wire.peerId ? wire.peerId.toString('hex') : 'unknown',
+        type: wire.type || 'unknown',
+        remoteAddress: wire.remoteAddress
+      }))
+    };
+  },
   'debug.fullTorrentStatus': function(infoHash) {
     check(infoHash, String);
     
@@ -249,6 +330,73 @@ Meteor.methods({
         info: filesInfo
       }
     };
+  },
+
+  'debug.fixStoragePath': async function() {
+    try {
+      const fs = Npm.require('fs');
+      const path = Npm.require('path');
+      
+      const torrents = await TorrentsCollection.find({}).fetchAsync();
+      console.log(`Found ${torrents.length} torrents in database`);
+      
+      const storagePath = Settings.get('private.storage.tempPath', '/tmp/fhir-torrents');
+      const port = process.env.PORT || 3000;
+      const resolvedPath = storagePath.replace(/\${PORT}/g, port);
+      
+      console.log(`Raw storage path: ${storagePath}`);
+      console.log(`Resolved storage path: ${resolvedPath}`);
+      console.log(`Port: ${port}`);
+      
+      if (!fs.existsSync(resolvedPath)) {
+        fs.mkdirSync(resolvedPath, { recursive: true });
+        console.log(`Created storage directory: ${resolvedPath}`);
+      }
+      
+      const sampleFiles = {};
+      
+      try {
+        const sampleData = await Assets.getTextAsync("sample-bundle.json");
+        if (sampleData) {
+          sampleFiles['sample-bundle.json'] = sampleData;
+          const samplePath = path.join(resolvedPath, "sample-bundle.json");
+          fs.writeFileSync(samplePath, sampleData, 'utf8');
+          console.log(`Created sample file at: ${samplePath} (${sampleData.length} bytes)`);
+        }
+      } catch (sampleErr) {
+        console.log('Could not load sample from Assets:', sampleErr.message);
+      }
+      
+      try {
+        const sampleResources = await Assets.getTextAsync("sample-resources.ndjson");
+        if (sampleResources) {
+          sampleFiles['sample-resources.ndjson'] = sampleResources;
+          const resourcesPath = path.join(resolvedPath, "sample-resources.ndjson");
+          fs.writeFileSync(resourcesPath, sampleResources, 'utf8');
+          console.log(`Created sample resources at: ${resourcesPath} (${sampleResources.length} bytes)`);
+        }
+      } catch (resourcesErr) {
+        console.log('Could not load sample resources from Assets:', resourcesErr.message);
+      }
+      
+      const files = fs.readdirSync(resolvedPath);
+      console.log(`Files in storage directory: ${files.join(', ')}`);
+      
+      return {
+        status: 'success',
+        torrents: torrents.length,
+        storagePath: resolvedPath,
+        pathExists: fs.existsSync(resolvedPath),
+        filesCreated: Object.keys(sampleFiles),
+        filesInDirectory: files
+      };
+    } catch (err) {
+      console.error('Error fixing storage path:', err);
+      return {
+        status: 'error',
+        error: err.message
+      };
+    }
   },
   'debug.getDetailedTorrentInfo': async function(infoHash) {
     check(infoHash, String);

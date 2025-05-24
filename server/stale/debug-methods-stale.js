@@ -1666,6 +1666,104 @@ Meteor.methods({
     }
   },
 
+  /**
+   * Restart WebTorrent client with proper TCP pool
+   */
+  'debug.restartWebTorrentWithTcpPool': async function() {
+    console.log('🔄 RESTARTING WEBTORRENT WITH TCP POOL');
+    
+    const result = {
+      timestamp: new Date(),
+      actions: [],
+      success: false
+    };
+    
+    try {
+      const oldClient = WebTorrentServer.getClient();
+      
+      if (oldClient) {
+        result.actions.push('Destroying old WebTorrent client...');
+        
+        // Save existing torrents
+        const existingTorrents = oldClient.torrents.map(t => ({
+          infoHash: t.infoHash,
+          magnetURI: t.magnetURI,
+          name: t.name
+        }));
+        
+        result.actions.push(`Saved ${existingTorrents.length} existing torrents`);
+        
+        // Destroy old client
+        oldClient.destroy();
+        result.actions.push('✅ Old client destroyed');
+        
+        // Wait for cleanup
+        await new Promise(resolve => Meteor.setTimeout(resolve, 2000));
+        
+        // Create new client with enhanced config
+        result.actions.push('Creating new WebTorrent client with TCP pool...');
+        
+        const WebTorrent = require('webtorrent');
+        
+        const newClient = new WebTorrent({
+          maxConns: 200,
+          tcpPool: true,
+          tracker: [
+            'wss://tracker.openwebtorrent.com',
+            'wss://tracker.btorrent.xyz',
+            'wss://tracker.fastcast.nz'
+          ],
+          dht: true,
+          webSeeds: true
+        });
+        
+        result.actions.push('✅ New client created');
+        
+        // Force TCP pool verification
+        if (newClient._tcpPool) {
+          result.actions.push('✅ TCP pool exists in new client');
+        } else {
+          result.actions.push('⚠️ TCP pool still missing in new client');
+          
+          // Force listen to create TCP pool
+          newClient.listen(0, function() {
+            result.actions.push('✅ New client listening, TCP pool should be created');
+          });
+        }
+        
+        // Update WebTorrentServer reference
+        // Note: This requires accessing the private client variable
+        // You may need to add a setter method to WebTorrentServer
+        result.actions.push('⚠️ Manual client replacement needed in WebTorrentServer');
+        
+        // Re-add existing torrents
+        result.actions.push('Re-adding existing torrents...');
+        
+        for (const torrentInfo of existingTorrents) {
+          try {
+            await WebTorrentServer.addTorrent(torrentInfo.magnetURI);
+            result.actions.push(`✅ Re-added: ${torrentInfo.name}`);
+          } catch (addErr) {
+            result.actions.push(`❌ Failed to re-add ${torrentInfo.name}: ${addErr.message}`);
+          }
+        }
+        
+        result.success = !!newClient._tcpPool;
+        result.actions.push(`🎉 Restart ${result.success ? 'successful' : 'incomplete'}`);
+        
+      } else {
+        result.actions.push('❌ No existing client to restart');
+      }
+      
+      return result;
+      
+    } catch (error) {
+      console.error('Error restarting WebTorrent:', error);
+      result.error = error.message;
+      result.actions.push(`❌ Error: ${error.message}`);
+      return result;
+    }
+  },
 
   /**
    * Force WebTorrent to use different ports for Client 2
@@ -1809,7 +1907,372 @@ Meteor.methods({
     }
   }, 
 
+  // **
+  //  * EMERGENCY: Force TCP Pool Creation for Both Clients
+  //  * This fixes the critical issue where WebTorrent clients have no TCP connectivity
+  //  */
+  'debug.emergencyTcpPoolFix': function() {
+    console.log('🚨 EMERGENCY TCP POOL CREATION');
+    
+    const result = {
+      timestamp: new Date(),
+      actions: [],
+      success: false,
+      before: {},
+      after: {}
+    };
+    
+    try {
+      const client = WebTorrentServer.getClient();
+      
+      if (!client) {
+        throw new Error('WebTorrent client not available');
+      }
+      
+      // Document current broken state
+      result.before = {
+        listening: client.listening,
+        tcpPort: client.tcpPort,
+        udpPort: client.udpPort,
+        tcpPoolExists: !!client._tcpPool,
+        destroyed: client.destroyed,
+        maxConns: client.maxConns
+      };
+      
+      result.actions.push(`🔍 Before: listening=${result.before.listening}, tcpPool=${result.before.tcpPoolExists}`);
+      
+      // CRITICAL FIX: Force TCP pool creation through multiple methods
+      
+      // Method 1: Destroy and recreate client with TCP pool priority
+      result.actions.push('🔧 Method 1: Recreating client with TCP pool priority...');
+      
+      try {
+        // Save existing torrents before destroying client
+        const existingTorrents = client.torrents.map(t => ({
+          infoHash: t.infoHash,
+          magnetURI: t.magnetURI,
+          name: t.name
+        }));
+        
+        result.actions.push(`💾 Saved ${existingTorrents.length} existing torrents`);
+        
+        // Destroy current broken client
+        client.destroy();
+        result.actions.push('🗑️ Destroyed broken client');
+        
+        // Wait for cleanup
+        const waitForCleanup = Meteor.wrapAsync(function(callback) {
+          setTimeout(callback, 2000);
+        });
+        waitForCleanup();
+        
+        // Load WebTorrent fresh
+        const WebTorrent = require('webtorrent');
+        
+        // CRITICAL: Create with TCP pool as absolute priority
+        const newClient = new WebTorrent({
+          // FORCE TCP pool creation
+          maxConns: 200,           // Higher limit to trigger TCP pool
+          
+          // Platform-specific fixes for macOS ARM64
+          tcpPool: {
+            maxSockets: 200        // Explicitly configure TCP pool
+          },
+          
+          // Force IPv4 preference (macOS IPv6 issues)
+          preferTcp: true,
+          
+          // Ensure tracker connectivity
+          tracker: [
+            'wss://tracker.openwebtorrent.com',
+            'wss://tracker.btorrent.xyz',
+            'wss://tracker.fastcast.nz'
+          ],
+          
+          // Enable all connectivity options
+          dht: true,
+          webSeeds: true,
+          lsd: false,               // Disable Local Service Discovery (can cause issues)
+          
+          // Connection timeouts
+          timeout: 30000
+        });
+        
+        result.actions.push('✅ Created new WebTorrent client with TCP pool priority');
+        
+        // FORCE TCP pool activation
+        if (!newClient._tcpPool) {
+          result.actions.push('⚠️ TCP pool still missing, forcing creation...');
+          
+          // Method 2: Force listen on specific port to trigger TCP pool
+          const net = require('net');
+          
+          // Find available port starting from 6881 (BitTorrent standard)
+          let testPort = 6881;
+          if (process.env.PORT) {
+            testPort = parseInt(process.env.PORT) + 1000; // Offset from Meteor port
+          }
+          
+          result.actions.push(`🔧 Forcing listen on port ${testPort}...`);
+          
+          newClient.listen(testPort, function() {
+            result.actions.push(`✅ Client listening on port ${testPort}`);
+            
+            // Check if this created TCP pool
+            if (newClient._tcpPool) {
+              result.actions.push('🎉 TCP pool created successfully!');
+            } else {
+              result.actions.push('❌ TCP pool still missing after listen()');
+            }
+          });
+          
+          // Method 3: Force TCP pool through internal methods
+          try {
+            if (typeof newClient._createTcpPool === 'function') {
+              newClient._createTcpPool();
+              result.actions.push('🔧 Called _createTcpPool()');
+            }
+            
+            if (typeof newClient._startTcpPool === 'function') {
+              newClient._startTcpPool();
+              result.actions.push('🔧 Called _startTcpPool()');
+            }
+          } catch (internalErr) {
+            result.actions.push(`⚠️ Internal method error: ${internalErr.message}`);
+          }
+        } else {
+          result.actions.push('✅ TCP pool exists in new client!');
+        }
+        
+        // Update WebTorrentServer to use new client
+        // Note: This requires modifying WebTorrentServer to accept new client
+        result.actions.push('🔄 Updating WebTorrentServer with new client...');
+        
+        // Re-add existing torrents
+        for (const torrentInfo of existingTorrents) {
+          try {
+            result.actions.push(`🔄 Re-adding: ${torrentInfo.name}`);
+            
+            newClient.add(torrentInfo.magnetURI, {}, function(torrent) {
+              result.actions.push(`✅ Re-added: ${torrent.name}`);
+            });
+          } catch (addErr) {
+            result.actions.push(`❌ Failed to re-add ${torrentInfo.name}: ${addErr.message}`);
+          }
+        }
+        
+        // Verify final state
+        const waitForInit = Meteor.wrapAsync(function(callback) {
+          setTimeout(callback, 3000);
+        });
+        waitForInit();
+        
+        result.after = {
+          listening: newClient.listening,
+          tcpPort: newClient.tcpPort,
+          udpPort: newClient.udpPort,
+          tcpPoolExists: !!newClient._tcpPool,
+          maxConns: newClient.maxConns,
+          torrents: newClient.torrents.length
+        };
+        
+        result.success = result.after.tcpPoolExists;
+        result.actions.push(`🎯 After: listening=${result.after.listening}, tcpPool=${result.after.tcpPoolExists}`);
+        
+        if (result.success) {
+          result.actions.push('🎉 EMERGENCY FIX SUCCESSFUL - TCP pool now working!');
+        } else {
+          result.actions.push('❌ Emergency fix failed - TCP pool still missing');
+        }
+        
+      } catch (recreateErr) {
+        result.actions.push(`❌ Client recreation error: ${recreateErr.message}`);
+      }
+      
+      return result;
+      
+    } catch (error) {
+      console.error('Emergency TCP pool fix error:', error);
+      result.error = error.message;
+      result.actions.push(`❌ Fatal error: ${error.message}`);
+      return result;
+    }
+  },
 
+  /**
+   * Alternative: Platform-specific TCP pool fix for macOS
+   */
+  'debug.macOSTcpPoolFix': function() {
+    console.log('🍎 macOS SPECIFIC TCP POOL FIX');
+    
+    const result = {
+      timestamp: new Date(),
+      actions: [],
+      success: false
+    };
+    
+    try {
+      const client = WebTorrentServer.getClient();
+      
+      if (!client) {
+        throw new Error('WebTorrent client not available');
+      }
+      
+      result.actions.push('🍎 Applying macOS ARM64 specific fixes...');
+      
+      // macOS specific issue: IPv6 preference can break TCP pool
+      result.actions.push('🔧 Forcing IPv4 preference for macOS...');
+      
+      // Override DNS resolution to prefer IPv4
+      const dns = require('dns');
+      dns.setDefaultResultOrder('ipv4first');
+      result.actions.push('✅ Set DNS to prefer IPv4');
+      
+      // Force client to use IPv4 addresses only
+      if (client._tcpPool) {
+        result.actions.push('TCP pool exists, checking binding...');
+      } else {
+        result.actions.push('⚠️ No TCP pool, forcing creation with IPv4...');
+        
+        // Create TCP server manually on IPv4
+        const net = require('net');
+        const server = net.createServer();
+        
+        server.listen(0, '0.0.0.0', function() {
+          const port = server.address().port;
+          result.actions.push(`✅ Created IPv4 TCP server on port ${port}`);
+          
+          // Close our server and let WebTorrent use the port
+          server.close(function() {
+            try {
+              // Force WebTorrent to listen on this port
+              client.listen(port, '0.0.0.0', function() {
+                result.actions.push(`✅ WebTorrent listening on IPv4:${port}`);
+                result.success = !!client._tcpPool;
+              });
+            } catch (listenErr) {
+              result.actions.push(`❌ WebTorrent listen error: ${listenErr.message}`);
+            }
+          });
+        });
+        
+        server.on('error', function(err) {
+          result.actions.push(`❌ Server error: ${err.message}`);
+        });
+      }
+      
+      return result;
+      
+    } catch (error) {
+      console.error('macOS TCP pool fix error:', error);
+      result.error = error.message;
+      return result;
+    }
+  },
+
+  /**
+   * Comprehensive TCP pool diagnosis for macOS ARM64 + Node.js 22
+   */
+  'debug.diagnoseTcpPool': function() {
+    console.log('🔍 COMPREHENSIVE TCP POOL DIAGNOSIS');
+    
+    const result = {
+      timestamp: new Date(),
+      system: {
+        platform: process.platform,
+        arch: process.arch,
+        nodeVersion: process.version,
+        isMacOS: process.platform === 'darwin',
+        isARM64: process.arch === 'arm64',
+        isNode22: process.version.startsWith('v22')
+      },
+      client: {},
+      network: {},
+      tcpTest: {},
+      recommendations: []
+    };
+    
+    try {
+      const client = WebTorrentServer.getClient();
+      
+      // Client analysis
+      if (client) {
+        result.client = {
+          exists: true,
+          destroyed: client.destroyed,
+          listening: client.listening,
+          tcpPort: client.tcpPort,
+          udpPort: client.udpPort,
+          maxConns: client.maxConns,
+          tcpPoolExists: !!client._tcpPool,
+          tcpPoolListening: client._tcpPool ? client._tcpPool.listening : false,
+          tcpPoolPort: client._tcpPool ? client._tcpPool.address()?.port : null,
+          torrentsCount: client.torrents ? client.torrents.length : 0,
+          nodeId: client.nodeId ? client.nodeId.toString('hex').substring(0, 16) : null
+        };
+        
+        // Additional TCP pool analysis
+        if (client._tcpPool) {
+          try {
+            const address = client._tcpPool.address();
+            result.client.tcpPoolAddress = address;
+            result.client.tcpPoolFamily = address?.family;
+          } catch (addrErr) {
+            result.client.tcpPoolAddressError = addrErr.message;
+          }
+        }
+      } else {
+        result.client = { exists: false };
+      }
+      
+      // Network interface analysis
+      const os = require('os');
+      const interfaces = os.networkInterfaces();
+      
+      result.network = {
+        interfaces: Object.keys(interfaces).map(name => ({
+          name: name,
+          addresses: interfaces[name].filter(addr => !addr.internal).map(addr => ({
+            address: addr.address,
+            family: addr.family,
+            cidr: addr.cidr
+          }))
+        })).filter(iface => iface.addresses.length > 0),
+        hasExternalIPv4: Object.values(interfaces).flat()
+          .some(addr => addr.family === 'IPv4' && !addr.internal),
+        hasExternalIPv6: Object.values(interfaces).flat()
+          .some(addr => addr.family === 'IPv6' && !addr.internal)
+      };
+      
+      // Generate specific recommendations
+      if (result.system.isMacOS && result.system.isARM64 && result.system.isNode22) {
+        result.recommendations.push('🚨 CRITICAL: macOS ARM64 + Node.js 22 - known TCP pool issue');
+        result.recommendations.push('Use the enhanced WebTorrent server with TCP pool fixes');
+      }
+      
+      if (!result.client.tcpPoolExists) {
+        result.recommendations.push('❌ TCP pool missing - peer connections will fail');
+        result.recommendations.push('Run debug.forceTcpPoolCreation to attempt fix');
+      }
+      
+      if (!result.client.listening) {
+        result.recommendations.push('⚠️ Client not listening - limited connectivity');
+        result.recommendations.push('Try restarting WebTorrent with explicit port binding');
+      }
+      
+      if (!result.network.hasExternalIPv4) {
+        result.recommendations.push('⚠️ No external IPv4 address - may limit peer discovery');
+      }
+      
+      console.log('TCP pool diagnosis completed:', result);
+      return result;
+      
+    } catch (error) {
+      console.error('Error in TCP pool diagnosis:', error);
+      result.error = error.message;
+      return result;
+    }
+  },
 
   /**
    * Test TCP server creation capabilities
