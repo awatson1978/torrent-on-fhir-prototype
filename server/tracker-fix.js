@@ -43,7 +43,7 @@ Meteor.startup(function() {
       } catch (err) {
         console.error('Error in periodic tracker fix:', err);
       }
-    }, 120000); // Run every 2 minutes
+    }, 30000); // Run every 30 seconds
     
     // Store interval ID in case we need to clear it later
     global.trackerFixIntervalId = intervalId;
