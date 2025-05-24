@@ -61,5 +61,27 @@ export const Settings = {
       dht: this.get('public.webtorrent.dht', true),
       webSeeds: this.get('public.webtorrent.webSeeds', true)
     };
+  },
+  
+  /**
+   * Get FHIR validation settings
+   * @return {Object} FHIR validation configuration
+   */
+  getFhirConfig: function() {
+    return {
+      validationLevel: this.get('public.fhir.validationLevel', 'warning'),
+      defaultFormat: this.get('public.fhir.defaultFormat', 'json')
+    };
+  },
+  
+  /**
+   * Get UI configuration
+   * @return {Object} UI configuration
+   */
+  getUIConfig: function() {
+    return {
+      theme: this.get('public.ui.theme', 'light'),
+      density: this.get('public.ui.density', 'comfortable')
+    };
   }
 };
