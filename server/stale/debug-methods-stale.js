@@ -2681,6 +2681,13 @@ Meteor.methods({
         
         result.actions.push('🔄 Reloading torrent');
         torrent = await WebTorrentServer.addTorrent(torrentRecord.magnetURI);
+        Meteor.setTimeout(function() {
+          if (torrent && typeof torrent.announce === 'function') {
+            torrent.announce();
+            console.log('Forced immediate announce for new torrent');
+          }
+        }, 1000);
+
       }
       
       result.actions.push(`📊 Initial: ready=${torrent.ready}, files=${torrent.files?.length || 0}, peers=${torrent.numPeers}`);
